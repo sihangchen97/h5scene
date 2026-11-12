@@ -115,3 +115,41 @@ mistakes now raise instead of being guessed:
 Tests: `test_set_bgr_and_unit_guards` (the guards + the red/green swap round trip),
 `test_conf_rejects_integers_and_out_of_range`, the existing round-trip tests updated to
 the new names and `/img`.
+
+## Review pass 3 (2026-11-13, at `c42302b`) — fixes applied
+
+Three review passes over `a2010a1`→`c42302b`. Findings that survived into the
+final tree, and their resolution:
+
+### Fixed in this pass
+
+- ✅ **Dead `import cv2` in `h5cam.py`** — `set_bgr` / `bgr` use only numpy
+  (`[::-1]`), so the import added in `c42302b` is unused. Removed.
+- ✅ **A failed rig build left an empty output directory** — the
+  `os.makedirs` ran in step 0 of `_build` (before validation), so a build
+  that failed validation left the (nested) output dir on disk. Moved to the
+  base create (step 2) that actually writes the file.
+  `test_failed_build_leaves_no_empty_output_dir`.
+- ✅ **Self-referencing pixi task** — `test = "pixi run -e test …"` nested a
+  second pixi run inside the task of the same name. Reverted to
+  `python -m pytest tests/ -q` (run via `pixi run -e test test`).
+- ✅ **Duplicated relative→absolute camera path join** — the
+  `normpath(join(rig_dir, p))` logic lived in both `_verify_sources` and the
+  `cam_files` property; factored into `_cam_file_paths()`.
+
+### Reviewed, no change needed
+
+- The `c42302b` naming guards (`to_mm`/`to_meters_mm`/`to_conf` dtype +
+  range guards) and the `/img` rename are consistent across cam + rig +
+  `has`/`sections`/`del_section` + ExternalLinks; the 2 earlier red tests
+  (`test_rig_per_frame_not_frame0`, `test_set_bgr_and_unit_guards`) were
+  resolved by committing that commit — the tree now passes.
+- `bgr(t)` / `bgr(t, n)` return a reversed **copy** (not a view), so a
+  caller mutating it can't alias `rgb(t)`; `set_bgr` correctly rejects
+  non-uint8 and non-3-channel inputs and routes through `set_rgb`.
+- `object.__new__(H5CamRig)` + `H5Base.__init__(…, create=True)` (the
+  `a19f6f9` rig-build handle) leaves only `path`/`_created`/`_h` set, which
+  is exactly what `set_attr`/`set_meta` need; `_abort_create` covers the
+  write/close/rename failure paths.
+
+Full suite: 67 pass.

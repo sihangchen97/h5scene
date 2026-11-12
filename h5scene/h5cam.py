@@ -9,7 +9,6 @@ codecs/sections.py drives the writers and the filter policy). The (h, w) of
 depth / depth_conf may be < (H, W) (aspect ratio must match); reads resize
 back to (H, W).
 """
-import cv2
 import numpy as np
 
 from .codecs import (FRAME_SHAPE, SECTIONS, broadcast_matrix, conf_frame, depth_hw_ok,

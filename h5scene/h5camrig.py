@@ -99,14 +99,16 @@ class H5CamRig(H5Base):
             self.close()
             raise
 
-    # ---- source fingerprint (a rewritten/missing camera is caught at open) ----
+    # ---- source files (stored relative to the rig's dir; resolved the same
+    # way VDS / ExternalLinks do — a rig moved with its cameras keeps working;
+    # legacy absolute paths stay usable too) ----
+    def _cam_file_paths(self):
+        d = osp.dirname(osp.abspath(self.path))
+        return [osp.normpath(osp.join(d, str(p))) for p in self._h.attrs["cam_files"]]
+
     def _verify_sources(self):
         a = self._h.attrs
-        # cam_files is stored relative to the rig file's directory (VDS and
-        # ExternalLinks resolve the same way) — a rig moved together with its
-        # cameras keeps working; legacy absolute paths stay usable too.
-        d = osp.dirname(osp.abspath(self.path))
-        files = [osp.normpath(osp.join(d, str(p))) for p in a["cam_files"]]
+        files = self._cam_file_paths()
         missing = [p for p in files if not osp.exists(p)]
         if missing:
             raise FileNotFoundError(
@@ -157,8 +159,7 @@ class H5CamRig(H5Base):
     def cam_files(self):
         """List[str] of the source camera files (absolute) this rig references
         (stored relative to the rig file's directory)."""
-        d = osp.dirname(osp.abspath(self.path))
-        return [osp.normpath(osp.join(d, str(p))) for p in self._h.attrs["cam_files"]]
+        return self._cam_file_paths()
 
     @property
     def cam_hw(self):
@@ -267,7 +268,8 @@ class H5CamRig(H5Base):
         missing = [p for p in absp if not osp.exists(p)]
         if missing:
             raise FileNotFoundError(f"camera source file(s) missing: {missing}")
-        os.makedirs(osp.dirname(out_path) or ".", exist_ok=True)
+        # (the output dir is created by the base create in step 2 — not here,
+        # so a validation failure below leaves no empty directory behind)
         # 1) open + validate everything (no file written yet); a failure
         # opening the k-th camera still closes cameras 0..k-1 deterministically
         cams = []

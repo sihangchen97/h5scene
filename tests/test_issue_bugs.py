@@ -223,6 +223,19 @@ def test_rig_build_creates_output_dir(tmp_path):
         assert rig.shape == (3, 2, 32, 64)
 
 
+def test_failed_build_leaves_no_empty_output_dir(tmp_path):
+    """A build that fails validation must not leave an empty output directory
+    behind (the dir is created by the base create, only when a file is
+    actually being written)."""
+    a = _cam(str(tmp_path / "a.h5"), 3, 32, 64, seed=1)
+    b = _cam(str(tmp_path / "b.h5"), 3, 32, 64, seed=2, scene="other")
+    out = str(tmp_path / "deep" / "nested" / "rig.h5")
+    assert not (tmp_path / "deep").exists()
+    with pytest.raises(ValueError, match="scene mismatch"):
+        H5CamRig(out, [a, b])
+    assert not (tmp_path / "deep").exists()          # no empty dir left
+
+
 def test_set_meta_multi_key_validates_all_before_writing(tmp_path):
     """#37: a type error on the SECOND key of a multi-key set_meta must not
     have written the first one (validate every key before any write)."""

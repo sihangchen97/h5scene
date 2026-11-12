@@ -34,7 +34,7 @@ test = { features = ["test"], solve-group = "default" }
 imgtest = { features = ["imgtest"], solve-group = "default" }
 
 [tool.pixi.tasks]
-test = "pixi run -e test python -m pytest tests/ -q"
+test = "python -m pytest tests/ -q"
 smoke-img = "pixi run -e imgtest python tests/smoke_image_formats.py"
 
 [tool.pixi.dependencies]
