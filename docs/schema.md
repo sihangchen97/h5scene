@@ -62,8 +62,8 @@
   cam_files  str[]  源相机文件路径(相对 rig 文件所在目录;VDS/ExternalLink
                     同按该目录解析 → rig 与相机一起拷贝/移动后仍可打开)  必有(N 个)
   cam_hw     int64 (N, 2) 每相机原生 (H, W)     必有
-  cam_fp     int64 (N, 4) = (T, H, W, size)  内容指纹;open 时读相机的 THW
-                    真比 + size 比,且校验每个被映射 section 的存在与形状  必有
+  cam_fp     int64 (N, 3) = (T, H, W)  内容指纹(相机的 THW;open 时从相机
+                    文件重新读 THW 真比,且校验每个被映射 section 的存在与形状)  必有
   # ---- sections(全部零字节;img 走链接,其余走 VDS)----
   /img/{t}_{n}   ExternalLink → 相机 n 的 /img/{t}(jpg 变长不能 VDS);
                  rgb(t, n) 按相机 n 原生 (H, W) 解码
@@ -88,6 +88,7 @@
   depth/depth_conf 必须存相机原生 (H,W)(下采样深度拒绝,VDS 不能上采样)、
   H 或 W 全相机相同(另一边取 max,左上对齐;两边都不同拒绝)、
   **输出路径不得是任一相机**(否则会覆盖相机数据)。
-- open 校验:`cam_files` 存在,且相机内容指纹(从相机文件读的 THW +
-  size,对 `cam_fp`)一致 ——源文件被删/改写时 VDS 会静默读 fillvalue,
-  必须显式报错。内容指纹不带 mtime:cp/rsync/git checkout 后字节不变即可打开。
+- open 校验:`cam_files` 存在,且相机内容指纹(从相机文件重新读的 THW,对
+  `cam_fp`)一致 ——源文件被删/改写 THW 时 VDS 会静默读 fillvalue,必须显式
+  报错。指纹不含 size/mtime:cp/rsync 或相机文件的 meta 编辑不影响打开;
+  改写 THW、删 section、改 section 形状才必须报错。

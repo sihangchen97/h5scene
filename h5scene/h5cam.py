@@ -9,6 +9,7 @@ codecs/sections.py drives the writers and the filter policy). The (h, w) of
 depth / depth_conf may be < (H, W) (aspect ratio must match); reads resize
 back to (H, W).
 """
+import operator
 import numpy as np
 
 from .codecs import (FRAME_SHAPE, SECTIONS, broadcast_matrix, conf_frame, depth_hw_ok,
@@ -40,8 +41,9 @@ class H5Cam(H5Base):
         super().__init__(path, mode=mode)
         try:
             thw = self.attr("THW")
-            if thw is None:
-                raise ValueError(f"{self.path}: not an H5Cam file (no attrs.THW)")
+            if thw is None or "is_metric" not in self._h.attrs:
+                raise ValueError(f"{self.path}: not an H5Cam file "
+                                 "(no attrs.THW / is_metric)")
             self.T, self.H, self.W = (int(x) for x in thw)
             rg = self._h.get("img")
             if rg is not None and len(rg) and (
@@ -54,17 +56,22 @@ class H5Cam(H5Base):
 
     @classmethod
     def create(cls, path, t, h, w, is_metric=False):
-        """Create a new file (overwriting); T, H, W >= 1."""
-        if any(x is None for x in (t, h, w)) or any(v < 1 for v in (t, h, w)):
-            raise ValueError("create needs T, H, W >= 1")
+        """Create a new file (overwriting); T, H, W INTEGRAL and >= 1
+        (2.7 is rejected — int() would silently truncate it)."""
+        try:
+            t, h, w = operator.index(t), operator.index(h), operator.index(w)
+        except TypeError:
+            raise ValueError(f"create needs integral T, H, W, got "
+                             f"({t!r}, {h!r}, {w!r})")
+        if min(t, h, w) < 1:
+            raise ValueError(f"create needs T, H, W >= 1, got ({t}, {h}, {w})")
         cam = object.__new__(cls)               # bypass the open-only __init__
         H5Base.__init__(cam, path, create=True)
         try:
-            cam.T, cam.H, cam.W = int(t), int(h), int(w)
+            cam.T, cam.H, cam.W = t, h, w
             cam.set_attr("THW", np.array((cam.T, cam.H, cam.W), np.int64))
             cam.set_attr("is_metric", bool(is_metric))
             cam._h.create_group("img")
-            cam._created = True
         except Exception:
             cam._abort_create()
             raise

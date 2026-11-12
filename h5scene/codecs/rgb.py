@@ -166,7 +166,7 @@ def normalize_rgb(rgb):
         q = jpeg_quality(b)
         if q is not None and q <= JPG_QUALITY:
             hw = jpeg_hw(b)                        # SOF header only, no decode
-            if hw is None:                         # not a jpeg at all: full decode
+            if hw is None:                         # a jpeg without a SOF: full decode
                 hw = decode_rgb(b).shape[:2]
             if H is not None and hw != (H, W):
                 raise ValueError(f"rgb frame {i} size {hw} != frame 0 size {(H, W)}")

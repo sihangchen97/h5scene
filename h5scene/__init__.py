@@ -51,9 +51,9 @@ axis onto it — written "[N]" where the rig adds one axis):
                        rig file's directory (the VDS/ExternalLinks resolve
                        them the same way — a rig moved with its cameras works),
                        cam_hw = int64 (N, 2) per-camera (H, W),
-                       cam_fp = int64 (N, 4) per-camera (T, H, W, size)
-                       content fingerprint (verified at open, together with
-                       the mapped sections' presence + shapes)
+                       cam_fp = int64 (N, 3) per-camera (T, H, W) — the
+                       camera's own THW, re-read from the camera at open,
+                       together with the mapped sections' presence + shapes
 
 H5Cam usage:
 

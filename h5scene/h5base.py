@@ -42,7 +42,8 @@ _NUM_EQUIV = {bool: (bool, np.bool_),
 class MetaSpec:
     """A meta key's declared type (+ optional int64 dtype / axis-0 length "T").
     Subclasses derive their registries from it:
-        META_KEYS = {k: v for k, v in H5Cam.META_KEYS.items() if k != "seq"}
+        META_KEYS = {k: v for k, v in H5Cam.META_KEYS.items()
+                    if k not in ("seq", "src_frame_idxs")}
     """
     __slots__ = ("type", "dtype", "length")
 
@@ -99,7 +100,8 @@ class H5Base:
     # registries: ATTR_KEYS name -> type (isinstance-checked); META_KEYS
     # name -> MetaSpec (type + optional dtype / axis-0 length). Each subclass
     # declares its own, or derives from another:
-    #     META_KEYS = {k: v for k, v in H5Cam.META_KEYS.items() if k != "seq"}
+    #     META_KEYS = {k: v for k, v in H5Cam.META_KEYS.items()
+    #                  if k not in ("seq", "src_frame_idxs")}
     ATTR_KEYS = {}
     META_KEYS = {}
 

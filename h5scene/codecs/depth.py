@@ -13,7 +13,7 @@ MM_MAX = 65535
 
 
 # ---- input -> stored (T, h, w) ----
-def to_mm(mm,):
+def to_mm(mm):
     """(T, h, w) INTEGER mm -> (T, h, w) uint16 mm (unit guard: an integer
     dtype only — a float means meters and must go through to_meters_mm)."""
     a = np.asarray(mm)
@@ -26,7 +26,7 @@ def to_mm(mm,):
     return np.clip(v, 0, MM_MAX).astype(np.uint16)
 
 
-def to_meters_mm(meters,):
+def to_meters_mm(meters):
     """(T, h, w) float METERS -> (T, h, w) uint16 mm (unit guard: a float
     dtype only — an integer means mm and must go through to_mm).
     d >= 65.535 m -> 0 (invalid): 65535 is the invalid sentinel, so the max
@@ -42,7 +42,7 @@ def to_meters_mm(meters,):
     return np.clip(v, 0, MM_MAX).astype(np.uint16)
 
 
-def to_conf(conf,):
+def to_conf(conf):
     """(T, h, w) float 0-1 -> (T, h, w) f16 0-1 (range guard: a float dtype
     only — an integer is never a 0-1 confidence and is rejected)."""
     a = np.asarray(conf)
@@ -74,8 +74,9 @@ def to_mask(mask, T, H, W):
 
 # ---- stored (h, w) frame -> scene (H, W) ----
 def depth_hw_ok(h, w, H, W):
-    """(h, w) usable for a scene of (H, W): same aspect ratio and not larger."""
-    return h <= H and w <= W and h * W == w * H
+    """(h, w) usable for a scene of (H, W): >= 1, same aspect ratio, not larger
+    (0 would otherwise pass the aspect test and blow up in h5py's chunks)."""
+    return h >= 1 and w >= 1 and h <= H and w <= W and h * W == w * H
 
 
 def _resize(frame, H, W):

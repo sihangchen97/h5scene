@@ -26,11 +26,11 @@ def _cam(path, T, H, W, seed, scene="s", depth_hw=None):
     return path
 
 
-def test_rig_per_frame_not_frame0(tmp_path):
-    """#1: the per-frame VDS block must select camera frame t, not frame 0.
+def test_rig_reads_each_t_not_frame0(tmp_path):
+    """#1: every t of a rig must read back its own camera frame t, not frame 0.
     Depth 1,2,3 m per t -> each t reads back its own value (not all frame 0)."""
     T = 3
-    # two cameras, W identical, DIFFERENT H -> the per-frame branch runs
+    # two cameras, W identical, DIFFERENT H -> camera b is padded
     a = _cam(str(tmp_path / "a.h5"), T, 48, 96, seed=1)
     b = str(tmp_path / "b.h5")                      # the smaller camera: distinct depth per frame
     with H5Cam.create(b, T, 32, 96) as c:
@@ -40,7 +40,7 @@ def test_rig_per_frame_not_frame0(tmp_path):
     out = str(tmp_path / "rig.h5")
     with H5CamRig.build(out, [a, b]) as rig:
         got = [int(rig.depth_mm(t, 1)[0, 0]) for t in range(T)]
-    assert got == [1000, 2000, 3000], f"per-frame VDS read wrong frames: {got}"
+    assert got == [1000, 2000, 3000], f"VDS read wrong frames: {got}"
 
 
 def test_rig_rejects_downsampled_depth(tmp_path):
@@ -276,15 +276,15 @@ def test_conf_rejects_integers_and_out_of_range(tmp_path):
 
 def test_rig_survives_cp_and_moves_with_cameras(tmp_path):
     """#40: a rig copied together with its cameras (byte-identical, new
-    must still open; a camera rewritten to different CONTENT (THW)
-    must be rejected. cam_files are stored relative to the rig's dir."""
+    mtime) must still open; a camera rewritten to a different THW must be
+    rejected. cam_files are stored relative to the rig's dir."""
     a = _cam(str(tmp_path / "a.h5"), 3, 32, 64, seed=1)
     b = _cam(str(tmp_path / "b.h5"), 3, 32, 64, seed=2)
     out = str(tmp_path / "rig.h5")
     H5CamRig.build(out, [a, b]).close()
     with h5py.File(out) as h:
         assert [str(p) for p in h.attrs["cam_files"]] == ["a.h5", "b.h5"]
-        assert h.attrs["cam_fp"].shape == (2, 4)    # (T, H, W, size) content
+        assert h.attrs["cam_fp"].shape == (2, 3)    # (T, H, W) content
     # byte-identical copy (cp) must open fine — the fingerprint is content-based
     moved = tmp_path / "elsewhere"
     moved.mkdir()
@@ -304,3 +304,61 @@ def test_rig_survives_cp_and_moves_with_cameras(tmp_path):
     (moved / "a.h5").unlink()
     with pytest.raises(FileNotFoundError):
         H5CamRig.open(str(moved / "rig.h5"))
+
+
+def test_depth_zero_hw_is_rejected_cleanly(tmp_path):
+    """#74: (T, 0, 0) depth must raise a clear ValueError (not h5py's
+    'All chunk dimensions must be positive')."""
+    with H5Cam.create(str(tmp_path / "c.h5"), 2, 4, 6) as cam:
+        with pytest.raises(ValueError, match="aspect ratio"):
+            cam.set_depth_mm(np.zeros((2, 0, 0), np.int32))
+        with pytest.raises(ValueError, match="aspect ratio"):
+            cam.set_depth_conf_01(np.zeros((2, 0, 0), np.float32))
+
+
+def test_create_rejects_non_integral_thw(tmp_path):
+    """#75: a float T/H/W is rejected (int() would silently truncate 2.7 -> 2)."""
+    p = str(tmp_path / "c.h5")
+    for bad in ((2.7, 8, 8), (2, 0.5, 8), (2, 8, "8")):
+        with pytest.raises(ValueError, match="integral"):
+            H5Cam.create(p, *bad)
+    assert not Path(p).exists()                  # no half-made file
+    # numpy ints and exact floats are fine
+    with H5Cam.create(p, np.int64(2), 8, 8) as cam:
+        assert cam.T == 2
+
+
+def test_open_requires_is_metric(tmp_path):
+    """#76: a file with only attrs.THW is NOT an H5Cam (is_metric is
+    always written by create, so its absence means a foreign file)."""
+    import h5py as _h
+    p = str(tmp_path / "foreign.h5")
+    with _h.File(p, "w") as h:
+        h.attrs["THW"] = np.array((2, 8, 8), np.int64)
+        h.create_group("meta")
+    with pytest.raises(ValueError, match="not an H5Cam file"):
+        H5Cam.open(p)
+    with _h.File(p, "w") as h:                  # same for a rig-shaped file
+        h.attrs.update(TNHW=np.array((2, 1, 8, 8), np.int64),
+                       cam_files=np.array(["a.h5"], dtype=_h.string_dtype()),
+                       cam_hw=np.array([(8, 8)], np.int64),
+                       cam_fp=np.array([(2, 8, 8)], np.int64))
+        h.create_group("meta")
+    with pytest.raises(ValueError, match="not an H5CamRig file"):
+        H5CamRig.open(p)
+
+
+def test_camera_meta_edit_does_not_break_rig_open(tmp_path):
+    """#71: the fingerprint is the camera THW, not the file size — a
+    metadata edit (which grows the HDF5 file) must NOT break the rig."""
+    a = _cam(str(tmp_path / "a.h5"), 3, 32, 64, seed=1)
+    b = _cam(str(tmp_path / "b.h5"), 3, 32, 64, seed=2)
+    out = str(tmp_path / "rig.h5")
+    H5CamRig.build(out, [a, b]).close()
+    before = os.path.getsize(a)
+    with H5Cam.open(a, "r+") as c:
+        c.set_meta("split", "train")            # grows the file
+    assert os.path.getsize(a) > before
+    with H5CamRig.open(out) as rig:             # must still open
+        assert rig.shape == (3, 2, 32, 64)
+        assert int(rig.depth_mm(2, 0)[0, 0]) == 1200

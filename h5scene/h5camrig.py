@@ -8,8 +8,8 @@ Wmax) — REFERENCES only, nothing copied into the rig file (verified
   set (img in ALL or in NONE), img per-frame size == the declared (H, W)
   (checked from the jpg SOF header, no full decode), depth/depth_conf stored
   at the camera's NATIVE (H, W) (downsampled depth is rejected — it cannot be
-  upscaled through a VDS block), and H or W identical across ALL cameras
-  (the other axis = max, top-left aligned; both axes differ -> rejected, no
+  upscaled through a VDS), and H or W identical across ALL cameras (the
+  other axis = max, top-left aligned; both axes differ -> rejected, no
   file written).
 - build is write-temp-then-rename: a failed build never touches an existing
   output file (and the temp file is removed).
@@ -18,20 +18,22 @@ Wmax) — REFERENCES only, nothing copied into the rig file (verified
   NATIVE (H, W), not the common (Hmax, Wmax).
 - /depth /mask /K /T /depth_conf: VIRTUAL datasets referencing the camera
   files — 0 bytes on disk in the rig file, the cameras' compressed data
-  mapped directly, at (T, N, Hmax, Wmax). A smaller camera: per-frame blocks
-  (h, w) -> (t, n, :h, :w) with fillvalue covering the pad region
-  (0 = invalid / False = padding) — matches the stored sentinels, so they
-  read back at the common (Hmax, Wmax).
+  mapped directly (one mapping per camera), at (T, N, Hmax, Wmax). A
+  smaller camera: its (h, w) part is mapped to (t, n, :h, :w) with the
+  fillvalue covering the pad region (0 = invalid / False = padding) —
+  matches the stored sentinels, so they read back at the common
+  (Hmax, Wmax).
 - attrs.cam_files (paths RELATIVE to the rig file's directory — VDS and
   ExternalLinks resolve that way, so a rig copied/moved together with its
   cameras keeps working) + attrs.cam_hw (per-camera (H, W)) + attrs.cam_fp
-  (per-camera (T, H, W, size) CONTENT fingerprint — THW is read from the
-  camera at open): H5CamRig(open) verifies the camera files still exist,
-  match the fingerprint, AND still hold every mapped section with the
-  mapped shape (a del_section / re-store on a camera leaves the size and
-  THW unchanged, so only the section check catches it), because a
-  missing/renamed/rewritten source makes VDS reads SILENTLY return the
-  fillvalue (and ExternalLinks raise KeyError) instead of erroring clearly.
+  (per-camera (T, H, W) — the camera's own THW, read back from the camera
+  at open): H5CamRig(open) verifies the camera files still exist, match
+  that THW, AND still hold every mapped section with the mapped shape
+  (a del_section / re-store on a camera leaves its own THW unchanged, so
+  only the section check catches it), because a missing/renamed/rewritten
+  source makes VDS reads SILENTLY return the fillvalue (and ExternalLinks
+  raise KeyError) instead of erroring clearly. The fingerprint is the THW,
+  NOT the file size — a metadata edit on a camera no longer breaks open.
 - the result is also a plain H5Base file (attrs.TNHW, /img t_n keys, /meta).
 """
 import os
@@ -45,7 +47,6 @@ from .codecs import (FRAME_SHAPE, SECTIONS, conf_frame, depth_mask as _dm,
                      jpeg_hw, mm_frame, meters_frame)
 from .h5base import H5Base, _STR
 from .h5cam import H5Cam
-
 
 
 class H5CamRig(H5Base):
@@ -69,7 +70,7 @@ class H5CamRig(H5Base):
                  "is_metric": bool,
                  "cam_files": np.ndarray,  # str[] source cam files, relative to the rig
                  "cam_hw": np.ndarray,     # int64 (N, 2) per-camera (H, W)
-                 "cam_fp": np.ndarray}     # int64 (N, 4) = (T, H, W, size) content fp
+                 "cam_fp": np.ndarray}     # int64 (N, 3) = (T, H, W) content fp
     META_KEYS = {k: v for k, v in H5Cam.META_KEYS.items()
                  if k not in ("seq", "src_frame_idxs")}   # the suffix is already there
 
@@ -94,9 +95,11 @@ class H5CamRig(H5Base):
         super().__init__(out_path, mode=mode)
         try:
             a = self._h
-            if any(k not in a.attrs for k in ("TNHW", "cam_files", "cam_hw", "cam_fp")):
+            if any(k not in a.attrs for k in
+                   ("TNHW", "cam_files", "cam_hw", "cam_fp", "is_metric")):
                 raise ValueError(f"{self.path}: not an H5CamRig file "
-                                 "(no attrs.TNHW / cam_files / cam_hw / cam_fp)")
+                                 "(no attrs.TNHW / cam_files / cam_hw / cam_fp / "
+                                 "is_metric)")
             self._verify_sources()
             self.T, self.N, self.H, self.W = (int(x) for x in a.attrs["TNHW"])
         except Exception:
@@ -129,17 +132,16 @@ class H5CamRig(H5Base):
         has_img = self.has("img")
         vds_secs = [n for n in SECTIONS if n in self._h]
         for i, p in enumerate(files):
-            st = os.stat(p)
             with h5py.File(p, "r") as c:
                 thw = c.attrs.get("THW")
                 cam = None if thw is None else tuple(int(x) for x in thw)
-                Tc, Hc, Wc, size = (int(x) for x in a["cam_fp"][i])
-                if (size != st.st_size or cam != (Tc, Hc, Wc)
+                Tc, Hc, Wc = (int(x) for x in a["cam_fp"][i])
+                if (cam != (Tc, Hc, Wc)
                         or (Tc, Hc, Wc) != (T, hw[i][0], hw[i][1])):
                     raise ValueError(
                         f"{self.path}: camera {i} ({p}) no longer matches the "
-                        f"fingerprint stored at build time (THW or size changed) "
-                        f"— the VDS would misread")
+                        f"camera THW stored at build time (it changed) — the "
+                        f"VDS would misread")
                 for name in vds_secs:               # the mapped sections, per camera
                     if name not in c:
                         raise ValueError(
@@ -360,15 +362,15 @@ class H5CamRig(H5Base):
                     if s != (c.H, c.W):
                         raise ValueError(f"cam {n} {name} is stored at {tuple(s)} "
                                          f"but the camera is ({c.H}, {c.W}): the rig "
-                                         f"maps per-frame VDS blocks and cannot "
+                                         f"maps one VDS block per camera and cannot "
                                          f"upscale downsampled depth")
             if has_rgb[n]:                        # size check from the SOF header
                 for t in range(c.T):
-                    ds = c._h["img"][f"{t}"]
-                    b = bytes(ds[:65536])        # covers a maximal APP1 before SOF
+                    img_ds = c._h["img"][f"{t}"]
+                    b = bytes(img_ds[:65536])    # covers a maximal APP1 before SOF
                     hw = jpeg_hw(b)
                     if hw is None:                # no SOF in the prefix: the full read
-                        b = bytes(ds[:])
+                        b = bytes(img_ds[:])
                         hw = jpeg_hw(b)
                         if hw is None:
                             hw = decode_rgb(b).shape[:2]
@@ -399,10 +401,10 @@ class H5CamRig(H5Base):
         rig.set_attr("is_metric", is_metric)
         rig.set_attr("cam_files", np.array(relp, dtype=_STR))
         rig.set_attr("cam_hw", np.array(dhw, np.int64))
-        fps = []
-        for p, (hh, ww) in zip(absp, dhw):
-            st = os.stat(p)
-            fps.append((T, hh, ww, st.st_size))    # (T, H, W, size): content
+        # (T, H, W) per camera — the camera's own THW is the fingerprint (the
+        # file SIZE is deliberately NOT stored: a metadata edit on a camera
+        # grows the HDF5 file, but a VDS is a live reference, so that is fine)
+        fps = [(T, hh, ww) for (hh, ww) in dhw]
         rig.set_attr("cam_fp", np.array(fps, np.int64))
         # /img: nothing stored — each (t, n) is an ExternalLink to the
         # camera's own /img/{t} (variable-length jpg cannot be a VDS).
