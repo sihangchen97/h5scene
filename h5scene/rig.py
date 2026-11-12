@@ -1,20 +1,25 @@
-"""Rig fusion: N single-camera sequences (H5Cam, shape (T, H, W)) -> one
-multi-camera H5Scene file (shape (T, N, H, W)). PROTOTYPE for feasibility —
-promote to a stable API after the probe tests pass.
+"""H5Cam (single-camera sequence, shape (T, H, W)) and H5CamRig (N H5Cam
+-> one multi-camera H5Scene file (T, N, Hmax, Wmax), maintained via HDF5
+VIRTUAL DATASETS).
 
-Rules (strict checks at merge time, see tests/test_rig.py):
-- every camera must have the SAME T; is_metric must match; the section set
-  (depth/mask/K/T/depth_conf present) must be identical across cameras.
-- ONE axis must be identical across ALL cameras (H or W); only the other
-  axis may differ. The rig stores (Hmax, Wmax) = max over cameras and pads
-  smaller cameras top-left aligned (rgb black, depth/depth_conf 0 = invalid,
-  mask False = padding) so the real region per (t, n) is exact.
-- reading exposes rgb(t, n) only (decoded (H, W, 3)) — no bytes-level reader.
-  merge copies stored bytes verbatim when the camera is already (H, W); it
-  re-encodes (jpg q95) only the frames of smaller, padded cameras.
-- K / pose are per-camera, no HW involved: stored (T, N, 3, 3) / (T, N, 4, 4).
-- output is a plain H5Scene file (TNHW attrs, t_n rgb keys) — openable by
-  H5Scene directly; no rig-specific section.
+H5CamRig build (verified 2026-11-13):
+- STRICT checks: same T, same is_metric, same section set (depth/mask/K/T/
+  depth_conf), rgb per-frame size == declared (H, W), depth/depth_conf/mask
+  per-frame size == frame 0, and H or W identical across ALL cameras
+  (the other axis is taken as max; both axes differ -> rejected).
+- /rgb: physically copied (jpg variable-length byte strings cannot be
+  virtual datasets) — verbatim for full-size cameras, decode+pad+re-encode
+  (jpg q95) for smaller ones, top-left aligned, black fill.
+- /depth /mask /K /T /depth_conf: VIRTUAL datasets referencing the camera
+  files — 0 bytes on disk in the rig file, the cameras' compressed data
+  mapped directly. Full-size camera: one block per camera; smaller camera:
+  per-frame blocks (H, W) -> (t, n, :H, :W) with fillvalue covering the
+  pad region (0 = invalid / False = padding) — matches the stored sentinels.
+- attrs.cam_files: the source camera files. H5CamRig(open) verifies they
+  all exist, because a missing source makes VDS reads SILENTLY return the
+  fillvalue (0) instead of erroring.
+- the result is a plain H5Scene file (attrs.TNHW, /rgb t_n keys, /meta):
+  open with H5Scene; H5CamRig(open) adds the source-file guard.
 """
 import os
 
@@ -22,14 +27,21 @@ import cv2
 import h5py
 import numpy as np
 
+from .convert import _to_depth_conf, _to_depth_mm, _to_mask, _depth_hw_ok
+from .rgb import _encode_jpg, _JPG_QUALITY
 from .scene import H5Scene
-from .rgb import _JPG_QUALITY, _encode_jpg
+
+_SECTIONS = (("depth", np.uint16, 0, (2,)),          # name, dtype, fillvalue, (h,w) rank
+             ("mask", np.bool_, False, (2,)),
+             ("K", np.float32, 0.0, (3, 3)),
+             ("T", np.float32, 0.0, (4, 4)),
+             ("depth_conf", np.float16, 0.0, (2,)))
 
 
 class H5Cam:
-    """Single-camera sequence file handle: shape (T, H, W). Same layout as
-    H5Scene with N collapsed: attrs.THW, /rgb/{t}, /depth (T,h,w),
-    /mask (T,H,W), /K (T,3,3), /T (T,4,4), /depth_conf (T,h,w)."""
+    """Single-camera sequence file: shape (T, H, W). attrs.THW, /rgb/{t},
+    /depth (T, h, w), /mask (T, H, W), /K (T, 3, 3), /T (T, 4, 4),
+    /depth_conf (T, h, w) — the H5Scene layout with the N axis collapsed."""
 
     def __init__(self, path, t=None, h=None, w=None, is_metric=True):
         if t is not None:
@@ -80,8 +92,8 @@ class H5Cam:
         h.create_dataset(name, data=data, **kw)
 
     def set_rgb(self, rgb):
-        """(T,) image bytes (stored verbatim; the jpg q95 policy is applied
-        by merge_rig, not here)."""
+        """(T,) image bytes (stored verbatim; jpg q95 policy applied by
+        H5CamRig, not here)."""
         b = np.asarray(rgb, dtype=object)
         if b.ndim != 1 or b.shape[0] != self.T:
             raise ValueError(f"rgb must be (T,) = ({self.T},), got {b.shape}")
@@ -92,8 +104,8 @@ class H5Cam:
             rg.create_dataset(f"{t}", data=np.frombuffer(bytes(x), np.uint8))
 
     def set_depth(self, depth):
-        """(T,H,W) uint16 mm (or smaller (T,h,w); h*W==w*H required)."""
-        from .convert import _to_depth_mm, _depth_hw_ok
+        """(T, H, W) float meters / uint16 mm (or smaller (T, h, w) with
+        h*W == w*H)."""
         d = _to_depth_mm(np.asarray(depth)[:, None], self.T, 1)[:, 0]
         h, w = d.shape[1], d.shape[2]
         if not _depth_hw_ok(h, w, self.H, self.W):
@@ -102,7 +114,6 @@ class H5Cam:
                 compression_opts=4, shuffle=True)
 
     def set_mask(self, mask):
-        from .convert import _to_mask
         m = _to_mask(np.asarray(mask)[:, None], self.T, 1, self.H, self.W)[:, 0]
         self._w("mask", m, chunks=(1, self.H, self.W), compression="gzip", compression_opts=4)
 
@@ -115,23 +126,15 @@ class H5Cam:
         self._w("T", _broadcast(pose, np.float32, self.T, 1, (4, 4))[:, 0])
 
     def set_depth_conf(self, conf):
-        from .convert import _to_depth_conf, _depth_hw_ok
         c = _to_depth_conf(np.asarray(conf)[:, None], self.T, 1)[:, 0]
         if not _depth_hw_ok(c.shape[1], c.shape[2], self.H, self.W):
             raise ValueError(f"depth_conf size incompatible with scene ({self.H},{self.W})")
         self._w("depth_conf", c, chunks=(1, c.shape[1], c.shape[2]),
                  compression="gzip", compression_opts=4)
 
-    # reads
-    def _f(self, name, t):
-        if not (0 <= t < self.T):
-            raise IndexError(f"t={t} out of range (T={self.T})")
-        if name not in self._h:
-            raise KeyError(f"no {name} section")
-        return self._h[name][t][:]
-
+    # reads (no bytes-level access; the stored jpg is an implementation detail)
     def rgb(self, t=0):
-        """Frame t decoded: (H, W, 3) uint8 RGB (no bytes-level reader)."""
+        """Frame t decoded: (H, W, 3) uint8 RGB."""
         if not (0 <= t < self.T):
             raise IndexError(f"t={t} out of range (T={self.T})")
         if "rgb" not in self._h or f"{t}" not in self._h["rgb"]:
@@ -142,104 +145,174 @@ class H5Cam:
         return img
 
     def depth(self, t=0):
-        return self._f("depth", t)
+        self._frame("depth", t)
 
     def mask(self, t=0):
-        return self._f("mask", t)
+        self._frame("mask", t)
 
     def K(self, t=0):
-        return self._f("K", t)
+        self._frame("K", t)
 
     def pose(self, t=0):
-        return self._f("T", t)
+        self._frame("T", t)
 
     def depth_conf(self, t=0):
-        return self._f("depth_conf", t)
+        self._frame("depth_conf", t)
+
+    def _frame(self, name, t):
+        if not (0 <= t < self.T):
+            raise IndexError(f"t={t} out of range (T={self.T})")
+        if name not in self._h:
+            raise KeyError(f"no {name} section")
+        return self._h[name][t][:]
 
 
-def merge_rig(cam_paths, out_path, meta=None):
-    """N H5Cam files -> one multi-camera H5Scene (T, N, Hmax, Wmax).
-    meta: dict passed to H5Scene.set_meta. Returns (T, N, H, W)."""
-    cams = [H5Cam(p) for p in cam_paths]
-    try:
-        T = {c.T for c in cams}
-        if len(T) != 1:
-            raise ValueError(f"camera T mismatch: {sorted(T)}")
-        T = T.pop()
-        met = {c.is_metric for c in cams}
-        if len(met) != 1:
-            raise ValueError(f"camera is_metric mismatch: {sorted(met)}")
-        is_metric = met.pop()
-        # STRICT (rig level): one axis must be identical across ALL cameras;
-        # only the other axis may differ and is taken as max + padded.
-        hs = {c.H for c in cams}
-        ws = {c.W for c in cams}
-        if len(hs) > 1 and len(ws) > 1:
-            raise ValueError(
-                f"rig needs H or W identical across cameras; got H={sorted(hs)} W={sorted(ws)}")
-        H = max(c.H for c in cams)
-        W = max(c.W for c in cams)
-        N = len(cams)
-        # per-camera which sections exist (must be the same set across cameras)
-        secs = [tuple(k for k in ("depth", "mask", "K", "T", "depth_conf") if k in c._h)
-                for c in cams]
-        if len(set(secs)) != 1:
-            raise ValueError(f"camera section sets differ: {secs}")
-        secs = secs[0]
+class H5CamRig:
+    """N H5Cam files -> one multi-camera file (T, N, Hmax, Wmax): /rgb
+    physically copied (jpg variable-length, not virtualizable), the
+    fixed-shape sections /depth /mask /K /T /depth_conf as HDF5 VIRTUAL
+    datasets referencing the camera files (0 bytes on disk; compressed
+    source data mapped directly; pad regions covered by fillvalue).
 
-        s = H5Scene(out_path, T, N, H, W, is_metric=is_metric)
+    Build:    H5CamRig(out_path, cam_paths, meta={...})
+    Open:     H5CamRig(out_path)   # verifies attrs.cam_files exist, then H5CamRig(out_path).scene
+    """
+
+    def __init__(self, out_path, cam_paths=None, meta=None):
+        self.path = str(out_path)
+        if cam_paths is None:            # open
+            self._h = h5py.File(self.path, "r")
+            if "TNHW" not in self._h.attrs or "cam_files" not in self._h.attrs:
+                self.close()
+                raise ValueError(f"{self.path}: not an H5CamRig file (no attrs.TNHW / cam_files)")
+            missing = [p for p in self._h.attrs["cam_files"] if not os.path.exists(p)]
+            if missing:
+                self.close()
+                raise FileNotFoundError(
+                    f"{self.path}: missing camera source file(s) — VDS would "
+                    f"silently read fillvalues: {missing}")
+            self.scene = H5Scene(self.path)
+            self._h.close()
+            self._h = self.scene._h
+            return
+        self._build(cam_paths, meta)
+
+    def close(self):
+        if self._h is not None:
+            if hasattr(self, "scene"):
+                self.scene.close()
+            else:
+                self._h.close()
+            self._h = None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
+
+    # ---- build ----
+    def _build(self, cam_paths, meta):
+        cams = [H5Cam(p) for p in cam_paths]
         try:
-            rg = s._h.require_group("rgb")
+            try:
+                os.remove(self.path)
+            except FileNotFoundError:
+                pass
+            tsets = {c.T for c in cams}
+            if len(tsets) != 1:
+                raise ValueError(f"camera T mismatch: {sorted(tsets)}")
+            T = tsets.pop()
+            mets = {c.is_metric for c in cams}
+            if len(mets) != 1:
+                raise ValueError(f"camera is_metric mismatch: {sorted(mets)}")
+            is_metric = mets.pop()
+            hs = {c.H for c in cams}
+            ws = {c.W for c in cams}
+            if len(hs) > 1 and len(ws) > 1:
+                raise ValueError(f"rig needs H or W identical across cameras; "
+                                 f"got H={sorted(hs)} W={sorted(ws)}")
+            H, W, N = max(c.H for c in cams), max(c.W for c in cams), len(cams)
+            secs = [tuple(k for k, *_ in _SECTIONS if k in c._h) for c in cams]
+            if len(set(secs)) != 1:
+                raise ValueError(f"camera section sets differ: {secs}")
+            secs = secs[0]
+            # strict per-frame size checks
             for n, c in enumerate(cams):
                 for t in range(T):
-                    b = c._h["rgb"][f"{t}"][:]
-                    img = cv2.imdecode(b, cv2.IMREAD_COLOR)
+                    img = cv2.imdecode(c._h["rgb"][f"{t}"][:], cv2.IMREAD_COLOR)
                     if img is None:
-                        raise ValueError(f"cam {n} frame {t} not decodable")
+                        raise ValueError(f"cam {n} rgb frame {t} not decodable")
                     if img.shape[:2] != (c.H, c.W):
-                        raise ValueError(f"cam {n} frame {t} size {img.shape[:2]} "
+                        raise ValueError(f"cam {n} rgb frame {t} size {img.shape[:2]} "
                                          f"!= declared ({c.H},{c.W})")
-                    if (c.H, c.W) != (H, W):  # smaller cam: pad top-left, black fill
-                        canvas = np.zeros((H, W, 3), np.uint8)
-                        canvas[:c.H, :c.W] = img
-                        b = _encode_jpg(canvas)
-                    rg.create_dataset(f"{t}_{n}", data=np.frombuffer(b, np.uint8))
-            for name, fill in (("depth", 0), ("mask", False), ("K", None),
-                               ("T", None), ("depth_conf", 0.0)):
-                if name not in secs:
-                    continue
-                _D = {"depth": ((H, W), np.uint16), "mask": ((H, W), bool),
-                      "K": ((3, 3), np.float32), "T": ((4, 4), np.float32),
-                      "depth_conf": ((H, W), np.float16)}
-                shp, dtype = _D[name]
-                arr = np.zeros((T, N, *shp), dtype)
+                for name, *_ in _SECTIONS:
+                    if name in secs and name not in ("K", "T"):
+                        s0 = c._h[name][0].shape
+                        for t in range(1, T):
+                            if c._h[name][t].shape != s0:
+                                raise ValueError(f"cam {n} {name} frame {t} shape {c._h[name][t].shape} "
+                                                 f"!= frame 0 {s0}")
+
+            with h5py.File(self.path, "w", libver="latest") as h:
+                h.attrs["TNHW"] = np.array((T, N, H, W), np.int64)
+                h.attrs["is_metric"] = is_metric
+                h.attrs["cam_files"] = np.array([os.path.abspath(c.path) for c in cams], dtype=_STR)
+                # /rgb: physical copy (variable-length jpg, not virtualizable)
+                rg = h.create_group("rgb")
                 for n, c in enumerate(cams):
-                    x0 = c._f(name, 0)   # strict: every frame must match this size
+                    full = (c.H, c.W) == (H, W)
                     for t in range(T):
-                        x = c._f(name, t)
-                        if x.shape != x0.shape:
-                            raise ValueError(f"cam {n} {name} frame {t} size {x.shape} "
-                                             f"!= frame 0 {x0.shape}")
-                        if name in ("K", "T") or x.shape[:2] == (H, W):
-                            arr[t, n] = x
-                        else:  # (h, w) < (H, W): top-left align, pad `fill`
-                            a = arr[t, n]
-                            a[:x.shape[0], :x.shape[1]] = x
-                            a[x.shape[0]:, :] = fill
-                            a[:x.shape[0], x.shape[1]:] = fill
-                kw = {"depth": dict(chunks=(1, 1, H, W), compression="gzip",
-                                    compression_opts=4, shuffle=True),
-                      "mask": dict(chunks=(1, 1, H, W), compression="gzip",
-                                   compression_opts=4),
-                      "depth_conf": dict(chunks=(1, 1, H, W), compression="gzip",
-                                         compression_opts=4),
-                      "K": {}, "T": {}}[name]
-                s._write(name, arr, **kw)
-            if meta:
-                s.set_meta(**meta)
+                        b = c._h["rgb"][f"{t}"][:]
+                        if full:
+                            rg.create_dataset(f"{t}_{n}", data=b)      # verbatim (b is a uint8 array)
+                        else:
+                            img = cv2.imdecode(b, cv2.IMREAD_COLOR)
+                            canvas = np.zeros((H, W, 3), np.uint8)     # pad top-left, black
+                            canvas[:c.H, :c.W] = img
+                            b = _encode_jpg(canvas, _JPG_QUALITY)
+                            rg.create_dataset(f"{t}_{n}", data=np.frombuffer(bytes(b), np.uint8))
+                # fixed-shape sections: virtual datasets referencing the cameras
+                for name, dtype, fill, rank in _SECTIONS:
+                    if name not in secs:
+                        continue
+                    shp = (H, W) if rank == (2,) else rank
+                    lay = h5py.VirtualLayout(shape=(T, N, *shp), dtype=dtype)
+                    for n, c in enumerate(cams):
+                        if name in ("K", "T"):        # (3,3)/(4,4) frames: one block per camera
+                            lay[:, n, ...] = h5py.VirtualSource(
+                                os.path.abspath(c.path), name, shape=(T, *c._h[name][0].shape))
+                        elif c._h[name][0].shape == (H, W) and (c.H, c.W) == (H, W):
+                            lay[:, n, ...] = h5py.VirtualSource(        # full-size frame: one block
+                                os.path.abspath(c.path), name, shape=(T, H, W))
+                        else:  # per-frame (h, w) blocks; pad region -> fillvalue
+                            for t in range(T):
+                                h_, w_ = c._h[name][t].shape
+                                lay[t, n, :h_, :w_] = h5py.VirtualSource(
+                                    os.path.abspath(c.path), name, shape=(h_, w_))
+                    h.create_virtual_dataset(name, lay, fillvalue=fill)
+                m = h.require_group("meta")       # H5Scene requires /meta on open
+                for k, v in (meta or {}).items():
+                    if v is not None:
+                        m.create_dataset(k, data=np.array(str(v), dtype=_STR))
         finally:
-            s.close()
-    finally:
-        for c in cams:
-            c.close()
-    return T, N, H, W
+            for c in cams:
+                c.close()
+        self._h = h5py.File(self.path, "r")
+        self.scene = H5Scene(self.path)
+        self._h.close()
+        self._h = self.scene._h
+
+    # ---- passthrough reads: rig.shape / rig.rgb(t, n) / rig.depth(...) / rig.has / rig.tags …
+    # (everything on H5Scene, incl. the .shape property) ----
+    def __getattr__(self, name):
+        if name.startswith("_") or name in ("path", "scene"):
+            raise AttributeError(name)
+        try:
+            sc = object.__getattribute__(self, "scene")
+        except AttributeError:
+            raise AttributeError(name)
+        return getattr(sc, name)
+
+
+_STR = h5py.string_dtype()

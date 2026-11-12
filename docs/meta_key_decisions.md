@@ -1,21 +1,31 @@
 # h5scene metadata 键值决策(2026-11-13)
 
-> **2026-11-13 架构决定(H5Cam / H5CamRig 拆分,原型已验证)**:H5Scene 拆成
+> **2026-11-13 架构决定(H5Cam / H5CamRig 拆分,VDS 版已验证)**:H5Scene 拆成
 > 单相机序列类 **H5Cam**(形状 (T, H, W),attrs.THW,/rgb/{t},…)+ 多相机融合
-> **H5CamRig**(N 个 H5Cam → 一个 (T, N, Hmax, Wmax) 文件,即现有 H5Scene 布局)。
-> 关键约束(已用 tests/test_rig.py 5 项验证):**某一边(H 或 W)必须在所有相机上
+> **H5CamRig**(N 个 H5Cam → 一个 (T, N, Hmax, Wmax) 文件,即现有 H5Scene 布局,
+> 可直接被 H5Scene 打开;H5CamRig(open) 额外校验源相机文件在)。
+> **VDS(HDF5 virtual datasets,经 h5py VirtualLayout/VirtualSource/
+> create_virtual_dataset 实现)**:定长 section /depth /mask /K /T /depth_conf
+> **零拷贝引用**相机文件(rg 文件内 0 字节,源文件的 gzip4 压缩数据直接映射,
+> 零重压缩);/rgb 是变长 jpg 字节串,**VDS 映射不了,物理拷贝**(已是 (Hmax,Wmax)
+> 的相机原样拷字节,小相机 decode+pad+重编码 q95 一次)。
+> 关键约束(已用 tests/test_rig.py 7 项验证):**某一边(H 或 W)必须在所有相机上
 > 相同**(另一侧才可不同,取 max)——两边都不同直接拒绝;小相机补全到 (Hmax, Wmax)
 > **左上对齐**,rgb 黑补 / depth·depth_conf 0 补(= 无效)/ mask False 补(= padding),
-> 下游 depth_mask 恰好落在各相机真实像素区;**补全发生在 merge/写入时**,输出文件
-> 本身就是 (T, N, Hmax, Wmax),读取零合成、零 resize。K / pose 无 HW 依赖、直接
-> (T, N, 3, 3)/(T, N, 4, 4)。**严格 check**(merge 时拒绝):T 一致、is_metric
-> 一致、section 集合一致、rgb 每帧尺寸 == 声明 (H, W)、depth/depth_conf/mask
-> 每帧尺寸 == 帧 0、H 或 W 之一全相机相同。
-> **读取只暴露 rgb(t, n) 解码数组,不暴露 rgb_bytes**(存盘 jpg 是实现细节);
-> merge 能不动就不动:已是 (Hmax, Wmax) 的相机原样拷贝字节,**只有需补全的小
-> 相机才 decode+pad+重编码一次**(每相机一次,非每帧读时编码)。
-> 效率:4 cam × T20 × 480×640 merge ≈ 21 ms/frame(jpg q95 + gzip4)。
-> 原型在 h5scene/rig.py,稳定后提升为正式 API。
+> VDS 的 **fillvalue 恰好就是这些补全值**(0/False),下游 depth_mask 恰好落在各
+> 相机真实像素区,读取零合成零 resize。逐帧 block 映射(每帧 (h,w) 块 → 虚拟
+> (t,n,:h,:w),元素数必须相等;整相机一块仅当帧形状==(Hmax,Wmax) 且相机满尺寸)。
+> **严格 check**(merge 时拒绝):T 一致、is_metric 一致、section 集合一致、rgb
+> 每帧尺寸 == 声明 (H, W)、depth/depth_conf/mask 每帧尺寸 == 帧 0、H 或 W 之一
+> 全相机相同。
+> **VDS 的坑(已验证,必须知道)**:① 源文件被删/改名时 **VDS 读取静默返回
+> fillvalue(0),不报错**——所以 attrs.cam_files 记录源清单,H5CamRig(open)
+> 校验存在性,缺了就报 FileNotFoundError(绝不静默读 0);② 相对路径引用相对
+> rg 文件位置解析(rg 与相机文件移动要一起移);③ VDS 不能对虚拟数据集再压缩
+> (storage 恒 0,源文件的压缩已生效)。
+> 效率:4 cam × T20 × 480×640 (rgb+depth) merge ≈ **4.8 ms/frame**(物理拷贝版
+> 21 ms/frame;输出 23 MB vs 75 MB,depth 部分 0 字节)。
+> 实现:h5scene/rig.py(H5Cam + H5CamRig)。
 
 > **2026-11-13 补充决定(4 键定位键)**:来源三键 `scene_path` / `source_dataset` / `scene_ids`
 > 退役,改为 4 个定位键 **`dataset` / `scene` / `seq` / `suffix`**。

@@ -58,5 +58,24 @@ with H5Scene("s.h5") as s:       # open
                                        # and, if depth_conf present, conf > 0 (or > conf_min)
 ```
 
+## Multi-camera rigs (h5scene.rig)
+
+N single-camera `H5Cam` sequences (shape (T, H, W)) -> one multi-camera file
+(T, N, Hmax, Wmax) with `H5CamRig`. Requires H or W identical across cameras
+(the other axis = max + pad, top-left aligned; pad = black / 0 / False via the
+VDS fillvalue). `/depth` `/mask` `/K` `/T` `/depth_conf` are stored as **HDF5
+virtual datasets** referencing the camera files (0 bytes in the rig file, the
+cameras' compressed data mapped directly); `/rgb` (variable-length jpg) is
+physically copied. The camera files stay referenced — keep them next to the
+rig file (absolute paths are recorded in `attrs.cam_files` and verified on
+open). See `docs/meta_key_decisions.md`.
+
+```python
+from h5scene.rig import H5Cam, H5CamRig
+rig = H5CamRig("rig.h5", ["cam0.h5", "cam1.h5"], meta={"dataset": "…", "scene": "…"})
+with H5CamRig("rig.h5") as rig:
+    rig.shape; rig.rgb(t, n); rig.depth(t, n); rig.depth_mask(t, n)   # == H5Scene
+```
+
 Install editable: `pip install -e .` (needs numpy / opencv-python / h5py).
 Test: `pytest` or `python -m pytest tests/`.

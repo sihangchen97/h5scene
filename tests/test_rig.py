@@ -1,149 +1,168 @@
-"""Feasibility tests for the H5Cam + H5CamRig merge (prototype in
-h5scene/rig.py): N single-camera sequences with DIFFERENT (H, W) -> one
-multi-camera H5Scene (T, N, Hmax, Wmax). Verifies padding, mask/depth
-completing to common HW, the strict T / section-set checks, and merge speed.
+"""Tests for H5Cam (single-camera) + H5CamRig (N x H5Cam -> (T, N, Hmax, Wmax))
+in h5scene/rig.py. H5CamRig stores the fixed-shape sections (/depth /mask /K
+/T /depth_conf) as HDF5 VIRTUAL DATASETS referencing the camera files
+(0 bytes on disk, compressed source mapped directly, pad via fillvalue) and
+/rgb physically (jpg is variable-length, not virtualizable).
+
+Covers: mixed-H merge (one axis identical, other = max + pad), the strict
+checks (T / is_metric / section-set / both-axes-differ), VDS zero-copy +
+fillvalue pad, the source-file guard, and merge throughput.
 """
+import os
 import sys
 import tempfile
 import time
 from pathlib import Path
 
 import cv2
+import h5py
 import numpy as np
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from h5scene.rig import H5Cam, merge_rig  # noqa: E402
+from h5scene.rig import H5Cam, H5CamRig  # noqa: E402
 from h5scene import H5Scene  # noqa: E402
 
 
 def _mk_cam(path, T, H, W, seed, has_depth=True):
-    """One synthetic single-camera H5Cam: a distinctive per-(t,n) rgb + depth."""
-    rng = np.random.default_rng(seed)
+    """One synthetic single-camera H5Cam: a constant rgb (value encodes seed)
+    + an all-valid depth (1.0 + t/100 m -> comfortably inside uint16 mm)."""
     cam = H5Cam(path, T, H, W)
     try:
         b = []
         for t in range(T):
-            # rgb frame: a constant block whose value encodes (t, seed) so the
-            # merge must place each camera's pixels in the right (t, n) slot
             img = np.full((H, W, 3), (t * 7 + seed) % 250, np.uint8)
-            img[0, 0] = (seed, t % 255, 0)  # corner marker
+            img[0, 0] = (seed, t % 255, 0)          # corner marker
             b.append(cv2.imencode(".jpg", img, [int(cv2.IMWRITE_JPEG_QUALITY), 95])[1].tobytes())
         cam.set_rgb(b)
         if has_depth:
-            # 1.0 + t/100 m -> 1000..1003 mm, comfortably inside uint16 mm range
-            d = np.full((T, H, W), 1.0 + t / 100.0, np.float32)
-            cam.set_depth(d)
+            cam.set_depth(np.full((T, H, W), 1.0 + t / 100.0, np.float32))
     finally:
         cam.close()
 
 
-def test_merge_mixed_hw(tmp_path):
-    """3 cameras, same T, W identical, DIFFERENT H: merge to (T, N, Hmax, W)
-    with top-left (bottom) padding; mask/depth completed so only real pixels
-    are valid. The one-side-identical rule is enforced (test_both_axes differ
-    rejected below)."""
+def test_rig_mixed_hw(tmp_path):
+    """3 cameras, same T, W identical, DIFFERENT H -> (T, 3, Hmax, W); smaller
+    cameras pad (top H rows) via VDS fillvalue; real region exact."""
     T = 4
-    sizes = [(64, 96), (48, 96), (32, 96)]   # W=96 shared, H varies -> Hmax=64
+    sizes = [(64, 96), (48, 96), (32, 96)]          # W=96 shared, H varies -> Hmax=64
     paths = [str(tmp_path / f"c{i}.h5") for i in range(3)]
     for i, (H, W) in enumerate(sizes):
         _mk_cam(paths[i], T, H, W, seed=10 + i)
     out = str(tmp_path / "rig.h5")
-    got = merge_rig(paths, out, meta={"dataset": "syn", "scene": "s", "seq": "q"})
-    assert got == (T, 3, 64, 96)
-
-    with H5Scene(out) as s:
-        assert s.shape == (T, 3, 64, 96)
+    rig = H5CamRig(out, paths, meta={"dataset": "syn", "scene": "s", "seq": "q"})
+    try:
+        assert rig.scene.shape == (T, 3, 64, 96)
         H, W = 64, 96
-        # camera n occupies its real (h, W) top; the bottom rows are padding
         for n, (h, w) in enumerate(sizes):
-            rgb = s.rgb(0, n)
+            rgb = rig.rgb(0, n)
             assert rgb.shape == (H, W, 3)
-            assert (rgb[:h, :w] > 0).all()         # real region
+            assert (rgb[:h, :w] > 0).all()          # real region
             if h != H:
-                assert rgb[h:, :].sum() == 0       # padded rows are black
-            # depth: real region valid, padded rows 0 (invalid)
-            d = s.depth(0, n)
+                assert rgb[h:, :].sum() == 0        # padded rows black
+            d = rig.depth(0, n)
             assert d.shape == (H, W)
-            assert (d[:h, :w] > 0).all()           # real mm > 0
+            assert (d[:h, :w] > 0).all()            # real mm > 0
             if h != H:
-                assert d[h:, :].sum() == 0
-            # depth_mask derived: True exactly on the real region
-            dm = s.depth_mask(0, n)
+                assert d[h:, :].sum() == 0          # padded rows invalid
+            dm = rig.depth_mask(0, n)
             assert dm[:h, :w].all()
             if h != H:
                 assert not dm[h:, :].any()
-    # both axes differ (H and W all distinct) -> rejected by the strict rule
-    a, b = str(tmp_path / "p.h5"), str(tmp_path / "q.h5")
-    _mk_cam(a, T, 48, 64, seed=20)
-    _mk_cam(b, T, 32, 48, seed=21)
-    with pytest.raises(ValueError, match="H or W identical"):
-        merge_rig([a, b], str(tmp_path / "both.h5"))
-    assert not (tmp_path / "both.h5").exists()
+        # /depth is a VIRTUAL dataset: 0 bytes stored in the rig file
+        with h5py.File(out, "r") as h:
+            assert h["depth"].id.get_storage_size() == 0
+            assert sum(h["rgb"][k].id.get_storage_size() for k in h["rgb"]) > 0  # rgb copied
+            assert "cam_files" in h.attrs
+    finally:
+        rig.close()
 
 
-def test_merge_t_mismatch_rejected(tmp_path):
-    """Strict check: cameras with different T must be rejected, no file written."""
+def test_rig_t_mismatch_rejected(tmp_path):
     _mk_cam(str(tmp_path / "a.h5"), 4, 32, 48, seed=1)
     _mk_cam(str(tmp_path / "b.h5"), 5, 32, 48, seed=2)
-    out = str(tmp_path / "rig.h5")
     with pytest.raises(ValueError, match="T mismatch"):
-        merge_rig([str(tmp_path / "a.h5"), str(tmp_path / "b.h5")], out)
-    assert not Path(out).exists()
+        H5CamRig(str(tmp_path / "rig.h5"), [str(tmp_path / "a.h5"), str(tmp_path / "b.h5")])
 
 
-def test_merge_section_set_mismatch_rejected(tmp_path):
-    """Strict check: a camera missing depth that the others have -> rejected."""
+def test_rig_section_set_mismatch_rejected(tmp_path):
     _mk_cam(str(tmp_path / "a.h5"), 4, 32, 48, seed=1, has_depth=True)
     _mk_cam(str(tmp_path / "b.h5"), 4, 32, 48, seed=2, has_depth=False)
     with pytest.raises(ValueError, match="section sets differ"):
-        merge_rig([str(tmp_path / "a.h5"), str(tmp_path / "b.h5")],
-                  str(tmp_path / "rig.h5"))
+        H5CamRig(str(tmp_path / "rig.h5"), [str(tmp_path / "a.h5"), str(tmp_path / "b.h5")])
 
 
-def test_merge_is_metric_mismatch_rejected(tmp_path):
-    a, b = str(tmp_path / "a.h5"), str(tmp_path / "b.h5")
+def test_rig_is_metric_mismatch_rejected(tmp_path):
+    a = str(tmp_path / "a.h5")
     _mk_cam(a, 4, 32, 48, seed=1)
+    b = str(tmp_path / "b.h5")
     with H5Cam(b, 4, 32, 48, is_metric=False) as cam:
         cam.set_rgb([cv2.imencode(".jpg", np.zeros((32, 48, 3), np.uint8))[1].tobytes()
                      for _ in range(4)])
     with pytest.raises(ValueError, match="is_metric"):
-        merge_rig([a, b], str(tmp_path / "rig.h5"))
+        H5CamRig(str(tmp_path / "rig.h5"), [a, b])
 
 
-def test_rig_merge_throughput(tmp_path):
-    """Efficiency: timing the N=4, T=20, 640x480 merge (realistic scale)."""
-    T, H, W = 20, 480, 640
+def test_rig_both_axes_differ_rejected(tmp_path):
+    """H AND W both differ across cameras -> rejected (one axis must match)."""
+    a, b = str(tmp_path / "a.h5"), str(tmp_path / "b.h5")
+    _mk_cam(a, 4, 48, 64, seed=1)
+    _mk_cam(b, 4, 32, 48, seed=2)
+    out = str(tmp_path / "rig.h5")
+    with pytest.raises(ValueError, match="H or W identical"):
+        H5CamRig(out, [a, b])
+    assert not os.path.exists(out)
+
+
+def test_rig_source_file_guard(tmp_path):
+    """VDS would silently read fillvalue if a source vanishes: H5CamRig(open)
+    must reject a missing cam_files entry instead."""
+    a = str(tmp_path / "a.h5")
+    _mk_cam(a, 4, 32, 48, seed=1)
+    out = str(tmp_path / "rig.h5")
+    rig = H5CamRig(out, [a])
+    rig.close()
+    os.rename(a, a + ".moved")
+    with pytest.raises(FileNotFoundError, match="missing camera source"):
+        H5CamRig(out)
+
+
+def test_rig_throughput(tmp_path):
+    """Merge throughput at realistic scale (4 cams, T=20, 480x640, rgb+depth).
+    The depth section is a VDS -> 0 bytes; the cost is the /rgb physical copy
+    (verbatim for the full-size cam, decode+pad+re-encode for the two smaller)."""
+    T, W = 20, 640
+    sizes = [(480, W), (480, W), (360, W), (240, W)]
     paths = []
-    for i in range(4):
+    for i, (H, W_) in enumerate(sizes):
         p = str(tmp_path / f"c{i}.h5")
+        cam = H5Cam(p, T, H, W_)
         rng = np.random.default_rng(i)
-        cam = H5Cam(p, T, H, W)
         try:
-            cam.set_rgb([cv2.imencode(
-                ".jpg", rng.integers(0, 256, (H, W, 3), np.uint8),
-                [int(cv2.IMWRITE_JPEG_QUALITY), 95])[1].tobytes() for _ in range(T)])
-            cam.set_depth(rng.uniform(0.1, 30.0, (T, H, W)).astype(np.float32))
+            cam.set_rgb([cv2.imencode(".jpg", rng.integers(0, 256, (H, W_, 3), np.uint8),
+                                      [int(cv2.IMWRITE_JPEG_QUALITY), 95])[1].tobytes()
+                         for _ in range(T)])
+            cam.set_depth(rng.uniform(0.1, 30.0, (T, H, W_)).astype(np.float32))
         finally:
             cam.close()
         paths.append(p)
-    t0 = time.perf_counter()
     out = str(tmp_path / "big.h5")
-    merge_rig(paths, out, meta={"dataset": "syn", "scene": "s"})
+    t0 = time.perf_counter()
+    rig = H5CamRig(out, paths, meta={"dataset": "syn", "scene": "s"})
     dt = time.perf_counter() - t0
-    nframes = T * 4
-    print(f"\n[rig throughput] {nframes} frames (4 cams x T{H}x{W}) merged in "
-          f"{dt:.2f}s  ({dt / nframes * 1000:.1f} ms/frame, "
-          f"{Path(out).stat().st_size / 1e6:.1f} MB out)")
-    with H5Scene(out) as s:
-        assert s.shape == (T, 4, H, W)
-        assert s.rgb(0, 0).shape == (H, W, 3)
+    try:
+        nframes = T * 4
+        print(f"\n[rig throughput] {nframes} frames (4 cams x T{W}x{480}) in "
+              f"{dt:.2f}s ({dt / nframes * 1000:.1f} ms/frame), "
+              f"out {Path(out).stat().st_size / 1e6:.1f} MB")
+        assert rig.scene.shape == (T, 4, 480, W)
+        assert rig.rgb(0, 0).shape == (480, W, 3)
+        with h5py.File(out, "r") as h:
+            assert h["depth"].id.get_storage_size() == 0      # VDS, not copied
+    finally:
+        rig.close()
 
 
 if __name__ == "__main__":
-    d = Path(tempfile.mkdtemp())
-    test_merge_mixed_hw(d)
-    test_merge_t_mismatch_rejected(d)
-    test_merge_section_set_mismatch_rejected(d)
-    test_merge_is_metric_mismatch_rejected(d)
-    test_rig_merge_throughput(d)
+    import pytest as _p
+    _p.main([__file__, "-q"])
