@@ -192,7 +192,8 @@ class H5Cam(H5Base):
         self.write_section("depth", d, chunks=(1, h, w), **filter_args("depth"))
 
     def set_depth_conf(self, conf):
-        """(T, H, W) 0-1 floats (or 0-65535 uint16) / an (H, W) frame (T=1);
+        """(T, H, W) 0-1 floats (or any unsigned integer 0..max — uint8 0-255,
+        uint16 0-65535; scaled by the dtype max) / an (H, W) frame (T=1);
         same (h, w) as depth; f16 0-1, gzip4 (no shuffle: most values 1.0)."""
         c = to_conf(self._cam(conf), self.T)
         self._check_depth_hw("depth_conf", c.shape[1], c.shape[2])

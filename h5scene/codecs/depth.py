@@ -28,10 +28,12 @@ def to_mm(depth, T):
 
 
 def to_conf(conf, T):
-    """(T, h, w) 0-1 floats (or 0-65535 uint16) -> (T, h, w) f16 0-1."""
+    """(T, h, w) 0-1 floats (or any unsigned integer 0..max — uint8 0-255,
+    uint16 0-65535; scaled by the dtype max, like integer depth is mm)
+    -> (T, h, w) f16 0-1."""
     a = np.asarray(conf)
-    if a.dtype == np.uint16:
-        a = a.astype(np.float64) / 65535.0
+    if a.dtype.kind == "u":
+        a = a.astype(np.float64) / float(np.iinfo(a.dtype).max)
     a = np.clip(a, 0.0, 1.0)
     a = np.where(np.isfinite(a), a, 0.0)
     return a.astype(np.float16)

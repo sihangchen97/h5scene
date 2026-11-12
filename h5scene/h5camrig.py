@@ -22,8 +22,11 @@ Wmax) — REFERENCES only, nothing copied into the rig file (verified
   (h, w) -> (t, n, :h, :w) with fillvalue covering the pad region
   (0 = invalid / False = padding) — matches the stored sentinels, so they
   read back at the common (Hmax, Wmax).
-- attrs.cam_files (absolute) + attrs.cam_hw (per-camera (H, W)) +
-  attrs.cam_fp (per-camera (T, H, W, file size, mtime_ns) fingerprint):
+- attrs.cam_files (paths RELATIVE to the rig file's directory — VDS and
+  ExternalLinks resolve that way, so a rig copied/moved together with its
+  cameras keeps working) + attrs.cam_hw (per-camera (H, W)) + attrs.cam_fp
+  (per-camera (T, H, W, size) CONTENT fingerprint — THW is read from the
+  camera at open; legacy (T, H, W, size, mtime_ns) rows still verified):
   H5CamRig(open) verifies the camera files still exist AND match the
   fingerprint, because a missing/renamed/rewritten source makes VDS reads
   SILENTLY return the fillvalue (and ExternalLinks raise KeyError) instead
@@ -63,9 +66,9 @@ class H5CamRig(H5Base):
     # "src_frame_idxs", plus the rig's own "suffix".
     ATTR_KEYS = {"TNHW": np.ndarray,       # int64 (4,) = (T, N, Hmax, Wmax)
                  "is_metric": bool,
-                 "cam_files": np.ndarray,  # str[] absolute source cam files
+                 "cam_files": np.ndarray,  # str[] source cam files, relative to the rig
                  "cam_hw": np.ndarray,     # int64 (N, 2) per-camera (H, W)
-                 "cam_fp": np.ndarray}     # int64 (N, 5) = (T, H, W, size, mtime_ns)
+                 "cam_fp": np.ndarray}     # int64 (N, 4) = (T, H, W, size) content fp
     META_KEYS = {**{k: v for k, v in H5Cam.META_KEYS.items()
                     if k not in ("seq", "src_frame_idxs")},
                  "suffix": str}            # this rig's own variant marker
@@ -99,22 +102,39 @@ class H5CamRig(H5Base):
     # ---- source fingerprint (a rewritten/missing camera is caught at open) ----
     def _verify_sources(self):
         a = self._h.attrs
-        files = [str(p) for p in a["cam_files"]]
+        # cam_files is stored relative to the rig file's directory (VDS and
+        # ExternalLinks resolve the same way) — a rig moved together with its
+        # cameras keeps working; legacy absolute paths stay usable too.
+        d = osp.dirname(osp.abspath(self.path))
+        files = [osp.normpath(osp.join(d, str(p))) for p in a["cam_files"]]
         missing = [p for p in files if not osp.exists(p)]
         if missing:
             raise FileNotFoundError(
                 f"{self.path}: missing camera source file(s) — VDS would "
                 f"silently read fillvalues and ExternalLinks raise: {missing}")
         T = int(a["TNHW"][0])                       # the rig's own T
+        hw = [(int(a["cam_hw"][i][0]), int(a["cam_hw"][i][1])) for i in range(len(files))]
         for i, p in enumerate(files):
             st = os.stat(p)
             if "cam_fp" in a:
-                Tc, Hc, Wc, size, mtime = (int(x) for x in a["cam_fp"][i])
-                if (st.st_size, st.st_mtime_ns) != (size, mtime) or (Tc, Hc, Wc) != (
-                        T, int(a["cam_hw"][i][0]), int(a["cam_hw"][i][1])):
+                fp = a["cam_fp"][i]
+                if fp.shape[0] == 5:                # legacy (T, H, W, size, mtime_ns)
+                    Tc, Hc, Wc, size, mtime = (int(x) for x in fp)
+                    bad = ((st.st_size, st.st_mtime_ns) != (size, mtime)
+                           or (Tc, Hc, Wc) != (T, hw[i][0], hw[i][1]))
+                    why = "size/mtime"
+                else:                               # (T, H, W, size): the camera's own
+                    Tc, Hc, Wc, size = (int(x) for x in fp)   # THW is read and compared
+                    with h5py.File(p, "r") as c:
+                        thw = c.attrs.get("THW")
+                    cam = None if thw is None else tuple(int(x) for x in thw)
+                    bad = (size != st.st_size or cam != (Tc, Hc, Wc)
+                           or (Tc, Hc, Wc) != (T, hw[i][0], hw[i][1]))
+                    why = "THW or size"
+                if bad:
                     raise ValueError(
                         f"{self.path}: camera {i} ({p}) no longer matches the "
-                        f"fingerprint stored at build time (size/mtime changed) "
+                        f"fingerprint stored at build time ({why} changed) "
                         f"— the VDS would misread")
 
     # ---- properties ----
@@ -135,8 +155,10 @@ class H5CamRig(H5Base):
 
     @property
     def cam_files(self):
-        """List[str] of the source camera files (absolute) this rig references."""
-        return [str(p) for p in self._h.attrs["cam_files"]]
+        """List[str] of the source camera files (absolute) this rig references
+        (stored relative to the rig file's directory)."""
+        d = osp.dirname(osp.abspath(self.path))
+        return [osp.normpath(osp.join(d, str(p))) for p in self._h.attrs["cam_files"]]
 
     @property
     def cam_hw(self):
@@ -225,12 +247,17 @@ class H5CamRig(H5Base):
         # 0) the paths themselves
         if not cam_paths:
             raise ValueError("need at least one camera path")
+        out_path = osp.abspath(str(out_path))
         absp = [osp.abspath(str(p)) for p in cam_paths]
         if len(set(absp)) != len(absp):
             raise ValueError(f"duplicate camera paths: {sorted(set(absp))}")
+        if out_path in absp:
+            raise ValueError(f"the output path {out_path!r} is one of its own "
+                             f"cameras — the build would overwrite the camera")
         missing = [p for p in absp if not osp.exists(p)]
         if missing:
             raise FileNotFoundError(f"camera source file(s) missing: {missing}")
+        os.makedirs(osp.dirname(out_path) or ".", exist_ok=True)
         # 1) open + validate everything (no file written yet)
         cams = [H5Cam(p) for p in absp]
         try:
@@ -324,24 +351,30 @@ class H5CamRig(H5Base):
     def _write(self, path, absp, vals, meta, suffix):
         T, H, W, N, has_rgb, secs, dhw = vals
         dataset, scene, is_metric, shared = meta
+        # references are stored relative to the rig file's directory: VDS and
+        # ExternalLinks resolve that way, so a rig copied/moved together with
+        # its cameras keeps working (the fingerprint is content-based, not
+        # mtime-based, so `cp`/`rsync`/git-checkout don't break it).
+        d = osp.dirname(path) or "."
+        relp = [osp.relpath(p, d) for p in absp]
         with h5py.File(path, "w", libver="latest") as h:
             h.attrs["TNHW"] = np.array((T, N, H, W), np.int64)
             h.attrs["is_metric"] = is_metric
-            h.attrs["cam_files"] = np.array(absp, dtype=_STR)
+            h.attrs["cam_files"] = np.array(relp, dtype=_STR)
             h.attrs["cam_hw"] = np.array(dhw, np.int64)
             fps = []
             for p, (hh, ww) in zip(absp, dhw):
                 st = os.stat(p)
-                fps.append((T, hh, ww, st.st_size, st.st_mtime_ns))
+                fps.append((T, hh, ww, st.st_size))    # (T, H, W, size): content
             h.attrs["cam_fp"] = np.array(fps, np.int64)
             # /rgb: nothing stored — each (t, n) is an ExternalLink to the
             # camera's own /rgb/{t} (variable-length jpg cannot be a VDS).
             # rgb(t, n) decodes at camera n's NATIVE (H, W).
             if has_rgb:
                 rg = h.create_group("rgb")
-                for n, c in enumerate(dhw):
+                for n, r in enumerate(relp):
                     for t in range(T):
-                        rg[f"{t}_{n}"] = h5py.ExternalLink(absp[n], f"/rgb/{t}")
+                        rg[f"{t}_{n}"] = h5py.ExternalLink(r, f"/rgb/{t}")
             # fixed-shape sections: VDS referencing the cameras
             for name in secs:
                 s = SECTIONS[name]
@@ -351,14 +384,14 @@ class H5CamRig(H5Base):
                 for n, (hh, ww) in enumerate(dhw):
                     if fixed:                       # (3,3)/(4,4): one block per camera
                         lay[:, n, ...] = h5py.VirtualSource(
-                            absp[n], name, shape=(T, *FRAME_SHAPE[name]))
+                            relp[n], name, shape=(T, *FRAME_SHAPE[name]))
                     elif (hh, ww) == (H, W):       # full-size: one block
-                        lay[:, n, ...] = h5py.VirtualSource(absp[n], name, shape=(T, H, W))
+                        lay[:, n, ...] = h5py.VirtualSource(relp[n], name, shape=(T, H, W))
                     else:                           # per-frame (h, w) blocks;
                         # pad region -> fillvalue; the [t] selects camera frame t
                         for t in range(T):
                             lay[t, n, :hh, :ww] = h5py.VirtualSource(
-                                absp[n], name, shape=(T, hh, ww))[t]
+                                relp[n], name, shape=(T, hh, ww))[t]
                 h.create_virtual_dataset(name, lay, fillvalue=s.fillvalue)
             m = h.require_group("meta")
             for k, v in (("dataset", dataset), ("scene", scene), ("suffix", suffix)):

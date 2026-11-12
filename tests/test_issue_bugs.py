@@ -71,19 +71,19 @@ def test_rgb_colour_roundtrip_from_file(tmp_path):
 
 
 def test_failed_build_preserves_output(tmp_path):
-    """#5: a failed rig build must not delete an existing output file, and must
-    leave no temp file behind. Put the output AT a camera path to prove the
-    old os.remove-before-validate bug is gone."""
+    """#5: a failed rig build must not delete or clobber an existing output
+    file, and must leave no temp file behind. A scene mismatch fails
+    validation BEFORE any write (an output colliding with a camera fails
+    even earlier — #36)."""
     a = _cam(str(tmp_path / "a.h5"), 3, 32, 64, seed=1)
     # a second camera with a DIFFERENT scene -> build must fail
     b = _cam(str(tmp_path / "b.h5"), 3, 32, 64, seed=2, scene="other")
-    out = str(tmp_path / "a.h5")            # same as camera a's path
+    out = str(tmp_path / "out.h5")
+    Path(out).write_bytes(b"keep me")
     with pytest.raises(ValueError, match="scene mismatch"):
         H5CamRig(out, [a, b])
-    assert Path(out).exists()               # the camera file survived
-    with H5Cam(out) as c:                   # and is still a valid camera
-        assert c.shape == (3, 32, 64)
-    assert not any(p.name.startswith("a.h5.tmp") for p in tmp_path.iterdir())
+    assert Path(out).read_bytes() == b"keep me"   # the existing file survived
+    assert not any(p.name.startswith("out.h5.tmp") for p in tmp_path.iterdir())
 
 
 def test_rgb_frame_count_mismatch(tmp_path):
@@ -195,3 +195,105 @@ def test_rig_rejects_empty_and_duplicate_paths(tmp_path):
         H5CamRig(str(tmp_path / "r.h5"), [a, a])
     with pytest.raises(ValueError, match="at least one"):
         H5CamRig(str(tmp_path / "r.h5"), [])
+
+
+def test_rig_output_path_must_not_be_a_camera(tmp_path):
+    """#36: a SUCCESSFUL build whose output path is one of its own cameras
+    used to overwrite that camera (its data lost, VDS pointing at itself)."""
+    a = _cam(str(tmp_path / "a.h5"), 3, 32, 64, seed=1)
+    b = _cam(str(tmp_path / "b.h5"), 3, 32, 64, seed=2)
+    size_before = Path(a).stat().st_size
+    with pytest.raises(ValueError, match="one of its own cameras"):
+        H5CamRig(a, [a, b])
+    assert Path(a).stat().st_size == size_before     # the camera survived
+    with H5Cam(a) as c:
+        assert c.shape == (3, 32, 64)
+    assert not any(p.name.startswith("a.h5.tmp") for p in tmp_path.iterdir())
+
+
+def test_rig_build_creates_output_dir(tmp_path):
+    """#42: a build into a not-yet-existing output directory must succeed,
+    like H5Cam.create."""
+    a = _cam(str(tmp_path / "a.h5"), 3, 32, 64, seed=1)
+    b = _cam(str(tmp_path / "b.h5"), 3, 32, 64, seed=2)
+    out = str(tmp_path / "deep" / "nested" / "rig.h5")
+    H5CamRig(out, [a, b]).close()
+    assert Path(out).exists()
+    with H5CamRig(out) as rig:
+        assert rig.shape == (3, 2, 32, 64)
+
+
+def test_set_meta_multi_key_validates_all_before_writing(tmp_path):
+    """#37: a type error on the SECOND key of a multi-key set_meta must not
+    have written the first one (validate every key before any write)."""
+    with H5Cam(str(tmp_path / "c.h5"), 2, 8, 8) as cam:
+        with pytest.raises(TypeError):
+            cam.set_meta(split="train", scene=42)
+        assert cam.meta("split") is None            # nothing was written
+        cam.set_meta(split="train")
+        with pytest.raises(TypeError):
+            cam.set_meta(split="train", scene=42)
+        assert cam.meta("split") == "train"         # the first key still fine
+        with pytest.raises(ValueError, match="unknown meta key"):
+            cam.set_meta(dataset="d", bogus="x")
+        assert cam.meta("dataset") is None
+
+
+def test_set_meta_mixing_forms_is_an_error(tmp_path):
+    """#38: set_meta(name, value, kw=...) used to silently drop the keywords;
+    it must raise (one form or the other)."""
+    with H5Cam(str(tmp_path / "c.h5"), 2, 8, 8) as cam:
+        with pytest.raises(ValueError, match="one form"):
+            cam.set_meta("split", "x", scene="y")
+        assert cam.meta("split") is None            # nothing written either way
+        assert cam.meta("scene") is None
+
+
+def test_conf_uint8_scaled_by_dtype_max(tmp_path):
+    """#41: an unsigned-integer confidence is scaled by its dtype max
+    (uint8 0-255, uint16 0-65535) — not clipped to 0/1 like uint8 used to."""
+    from h5scene.codecs import to_conf
+    got = to_conf(np.array([[0, 128, 200, 255]], np.uint8), 1)[0]
+    assert np.allclose(got, [0.0, 128 / 255, 200 / 255, 1.0], atol=1e-3)
+    got16 = to_conf(np.array([[0, 32767, 65535]], np.uint16), 1)[0]
+    assert np.allclose(got16, [0.0, 32767 / 65535, 1.0], atol=1e-3)
+    # round trip through the file
+    with H5Cam(str(tmp_path / "c.h5"), 1, 1, 4) as cam:
+        cam.set_depth(np.array([[[1.0, 1.0, 1.0, 1.0]]], np.float32))
+        cam.set_depth_conf(np.array([[0, 128, 200, 255]], np.uint8))
+    with H5Cam(str(tmp_path / "c.h5")) as cam:
+        c = cam.depth_conf(0)
+        assert abs(float(c[0, 1]) - 128 / 255) < 1e-3 and float(c[0, 3]) == 1.0
+        assert not cam.depth_mask(0)[0, 0] and cam.depth_mask(0)[0, 1]
+
+
+def test_rig_survives_cp_and_moves_with_cameras(tmp_path):
+    """#40: a rig copied together with its cameras (byte-identical, new
+    mtime) must still open; a camera rewritten to different CONTENT (THW)
+    must be rejected. cam_files are stored relative to the rig's dir."""
+    a = _cam(str(tmp_path / "a.h5"), 3, 32, 64, seed=1)
+    b = _cam(str(tmp_path / "b.h5"), 3, 32, 64, seed=2)
+    out = str(tmp_path / "rig.h5")
+    H5CamRig(out, [a, b]).close()
+    with h5py.File(out) as h:
+        assert [str(p) for p in h.attrs["cam_files"]] == ["a.h5", "b.h5"]
+        assert h.attrs["cam_fp"].shape == (2, 4)    # (T, H, W, size) content
+    # byte-identical copy with a NEW mtime (cp) must open fine
+    moved = tmp_path / "elsewhere"
+    moved.mkdir()
+    Path(out).replace(moved / "rig.h5")              # the rig moves too
+    os.system(f"cp {a} {moved}/a.h5 && cp {b} {moved}/b.h5")
+    os.utime(moved / "a.h5")                         # force a different mtime
+    with H5CamRig(str(moved / "rig.h5")) as rig:
+        assert rig.shape == (3, 2, 32, 64)
+        assert int(rig.depth(2, 0)[0, 0]) == 1200   # VDS reads the real data
+    # a rewritten camera (different T -> different THW content) must be caught
+    with H5Cam(str(moved / "b.h5"), 5, 32, 64) as c:
+        c.set_rgb([encode_rgb(np.zeros((32, 64, 3), np.uint8))] * 5)
+        c.set_meta(dataset="syn", scene="s")
+    with pytest.raises((ValueError, FileNotFoundError)):
+        H5CamRig(str(moved / "rig.h5"))
+    # a missing camera still raises clearly
+    (moved / "a.h5").unlink()
+    with pytest.raises(FileNotFoundError):
+        H5CamRig(str(moved / "rig.h5"))

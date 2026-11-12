@@ -169,8 +169,13 @@ class H5Base:
           - set_meta(dataset=…, scene=…, …): a multi-key convenience — set
             the given keys, leave the rest as-is (a keyword given as None
             means "do not touch"; for a single key, None = remove).
-        The values are validated BEFORE any old value is deleted."""
+        Mixing both forms (a positional name AND keywords) raises — it used
+        to silently drop the keywords. Every value is validated BEFORE the
+        first write (a bad second key never leaves the first one written)."""
         if name is not None:                        # single-key form
+            if kw:
+                raise ValueError(f"set_meta takes one form: (name, value) OR "
+                                 f"keywords — not both (got {name!r} and {kw!r})")
             if name not in self.META_KEYS:
                 raise ValueError(f"unknown meta key {name!r}; known: {tuple(self.META_KEYS)}")
             if value is not None:                   # validate first
@@ -192,8 +197,14 @@ class H5Base:
             return self
         if not kw:                                  # set_meta() with nothing to do
             return self
+        for k, v in kw.items():                     # validate EVERY key first
+            if v is None:                           # multi-key: None = leave as-is
+                continue
+            if k not in self.META_KEYS:
+                raise ValueError(f"unknown meta key {k!r}; known: {tuple(self.META_KEYS)}")
+            self._check_meta_spec(k, v)
         for name, value in kw.items():
-            if value is None:                       # multi-key: None = leave as-is
+            if value is None:
                 continue
             self.set_meta(name, value)             # recurse: single-key form
         return self
