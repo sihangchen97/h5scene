@@ -1,5 +1,17 @@
 # h5scene metadata 键值决策(2026-11-13)
 
+> **2026-11-13 架构决定(H5Cam / H5CamRig 拆分,原型已验证)**:H5Scene 拆成
+> 单相机序列类 **H5Cam**(形状 (T, H, W),attrs.THW,/rgb/{t},…)+ 多相机融合
+> **H5CamRig**(N 个 H5Cam → 一个 (T, N, Hmax, Wmax) 文件,即现有 H5Scene 布局)。
+> 关键约束(已用 tests/test_rig.py 5 项验证):不同相机的 (H, W) **可不同**——
+> 融合到公共 (Hmax, Wmax)= max(各相机),小图**左上对齐**、rgb 黑补 / depth·
+> depth_conf 0 补(= 无效)/ mask False 补(= padding),下游 depth_mask 恰好落在
+> 各相机真实像素区;K / pose 无 HW 依赖、直接 (T, N, 3, 3)/(T, N, 4, 4)。**严格 check**
+> (merge 时拒绝并删半成品):各相机 T 一致、is_metric 一致、section 集合一致、
+> rgb 每帧尺寸 == 声明 (H, W)、depth/depth_conf/mask 每帧尺寸 == 帧 0。
+> 效率:4 cam × T20 × 480×640 merge ≈ 21 ms/frame(jpg q95 + gzip4)。
+> 原型在 h5scene/rig.py,稳定后提升为正式 API。
+
 > **2026-11-13 补充决定(4 键定位键)**:来源三键 `scene_path` / `source_dataset` / `scene_ids`
 > 退役,改为 4 个定位键 **`dataset` / `scene` / `seq` / `suffix`**。
 > 语义(用户定):`dataset` = 顶层数据集名;`(dataset, scene[, seq])` 相同的多个 h5 =
