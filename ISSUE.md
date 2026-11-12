@@ -33,42 +33,16 @@ Four review passes plus an independent audit. Everything is fixed, dropped on pu
   - an atomic `set_rgb` replace (audit).
 - **False positives:** `Image.NEAREST` ×2 and "`filter_args` unused" (audit).
 
-## Review pass 5 (2026-11-13, at `67d7aba`; fixed in `1b77006`)
+## Closed: review passes 5–6 #71–#81 (2026-11-13)
 
-71. ✅ **`cam_fp` no longer stores the file size** — it is `(N, 3) = (T, H, W)` (the camera's own THW, re-read from the camera at open); a metadata edit no longer breaks open, the size check only produced false alarms. `docs/schema.md` + `h5scene/__init__.py` updated; test_camera_meta_edit_does_not_break_rig_open.
-    - **Repro:** run `H5Cam.open(a, "r+").set_meta("split", "train")` after the build. `H5CamRig.open` then raises "no longer matches the fingerprint". The edit grows the HDF5 file, and the fingerprint includes the file size.
-    - **The size doesn't catch real changes either:** rewriting depth at the same shape keeps the size, and the rig opens and reads the new values. That is correct, because a VDS is a live reference.
-    - **Why it can go:** since #51, open checks each mapped section's presence and shape, which covers everything the size check was for. The size now only produces false alarms.
-    - **Fix:** drop `size` from `cam_fp` (it becomes `(T, H, W)`, which is redundant with `cam_hw` plus T). Alternatively, keep it but document that any camera write invalidates the rig. Update `h5camrig.py` docstring L25-34 and `docs/schema.md`.
-72. ✅ **Stale "per-frame VDS blocks" text removed** (h5camrig docstring + error message, test_issue_bugs, CLAUDE.md).
-    - `h5camrig.py` L21-24 (module docstring) and L363 (error message: "the rig maps per-frame VDS blocks").
-    - `tests/test_issue_bugs.py` L30-33 ("the per-frame branch runs").
-    - CLAUDE.md L44 ("per-frame VDS").
-73. ✅ **All leftovers fixed** (MetaSpec docstring example, trailing commas, `ds` reuse, the jpeg comment, `cam._created = True`, double blank line).
-    - The `MetaSpec`/`H5Base` docstring example still derives with `if k != "seq"` (`h5base.py` L45, L102). The rig also drops `src_frame_idxs`.
-    - The #66 edit left trailing commas: `def to_mm(mm,)`, `to_meters_mm(meters,)`, `to_conf(conf,)`.
-    - In `_validate`, `ds` is reused, first for the dataset set and then for the img dataset (L332 vs L367).
-    - The comment "not a jpeg at all" in `normalize_rgb` (`rgb.py` L281) is wrong: `q` is not None there, so it is a jpeg without a SOF.
-    - `H5Cam.create` sets `cam._created = True` again, but the base `__init__` already sets it.
-    - `h5camrig.py` L49-50 has a double blank line.
-74. ✅ **`(T, 0, 0)` depth is now a clear ValueError** — `depth_hw_ok` requires `h, w >= 1` (test_depth_zero_hw_is_rejected_cleanly). with "All chunk dimensions must be positive". `depth_hw_ok` accepts `h = w = 0` because `0*W == 0*H`. Fix: require `h, w >= 1` in `depth_hw_ok`.
-75. ✅ **`create` rejects non-integral T/H/W** via `operator.index` (test_create_rejects_non_integral_thw). Any number ≥ 1 is accepted and then truncated by `int()`. Fix: require integral values (`operator.index`, or `int(x) == x`).
-76. ✅ **`open` requires `attrs.is_metric`** on both H5Cam and H5CamRig (test_open_requires_is_metric). (#62 said it could be required). A foreign file with only `THW` opens, and the `is_metric` property raises `KeyError` later. Fix: add `is_metric` to the "not an H5Cam/H5CamRig file" checks.
-77. ⏭️ **`_tobedelete/probe_t.h5` is still on disk**, although #69 says the directory was deleted. It is gitignored and is the local mv-not-rm holding area, so this is a wording mismatch only. Remove it by hand when convenient.
+- **Rig fingerprint (#71, #79):** removed. `cam_fp` is gone; open compares each camera's `attrs.THW` with `(T, *cam_hw[n])` and checks every mapped section. A metadata edit on a camera no longer breaks the rig, because a VDS is a live reference.
+- **Input guards:**
+  - `depth_hw_ok` requires `h, w >= 1` (#74).
+  - `H5Cam.create` rejects non-integral or `bool` T/H/W with a `TypeError` (#75, #80).
+  - `open` requires `attrs.is_metric` on both classes (#76).
+- **Docs, text and tests:** stale per-frame-VDS and fingerprint wording removed, plus small leftovers (#72, #73, #78, #81). Regression tests were added for each fix.
+- ⏭️ #77: `_tobedelete/` is the gitignored local mv-not-rm holding area, not repo content.
 
-## Open: review of the #71–#76 fixes (2026-11-13, at `1b77006`)
+## Open
 
-78. ✅ **README.md updated for #71 (and #79).** L46 still says `cam_fp = int64 (N, 4) per-camera (T, H, W, size)`, and L81 says "content fingerprint (THW + size)".
-79. ✅ **`cam_fp` dropped**: open compares the camera THW with `(T, *cam_hw[n])`. Was: `cam_fp` is now fully redundant. Each row is `(TNHW[0], *cam_hw[n])`, and `_verify_sources` even asserts that equality. It is also not a "content" fingerprint (see CLAUDE.md L38, `__init__.py` L85 and `schema.md`). Pick one:
-    - drop `cam_fp` and compare the camera's THW with `(T, *cam_hw[n])` directly;
-    - or keep it and call it "the camera THW at build time", not a content fingerprint.
-80. ✅ **`H5Cam.create` type handling fixed.** Non-integral T/H/W now raises `TypeError` (`from None`); `bool` is rejected explicitly (it would have passed as 1 via `operator.index(True) == 1`).
-81. ✅ **Tests updated for #79.** The `cam_fp` assertion is gone (now asserts `cam_hw`), the foreign-rig fixture no longer sets `cam_fp`, and the stale "fingerprint (THW + size)" / "fingerprint is content-based" / "fingerprint detection" comments are reworded.
-    - **Fails:** `tests/test_issue_bugs.py` L287 asserts `h.attrs["cam_fp"].shape == (2, 3)` → `test_rig_survives_cp_and_moves_with_cameras` raises `KeyError`. Fix: assert `"cam_fp" not in h.attrs` and `cam_hw.shape == (2, 2)`.
-    - **Stale text:**
-      - L107: "fingerprint (THW + size)".
-      - L288: "fingerprint is content-based".
-      - L345: the foreign-rig fixture still sets `cam_fp`.
-      - L352: the #71 docstring says "fingerprint".
-      - CLAUDE.md L44: "fingerprint detection".
-      - `h5camrig.py` L59: the class docstring says "match the stored fingerprint".
+None.
