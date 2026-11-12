@@ -42,8 +42,10 @@ def _mk_cam(path, T, H, W, seed, has_depth=True):
 
 
 def test_rig_mixed_hw(tmp_path):
-    """3 cameras, same T, W identical, DIFFERENT H -> (T, 3, Hmax, W); smaller
-    cameras pad (top H rows) via VDS fillvalue; real region exact."""
+    """3 cameras, same T, W identical, DIFFERENT H -> (T, 3, Hmax, W).
+    /rgb is an ExternalLink -> each cam read at its NATIVE (h, w) (nothing
+    copied/stored, no re-encode); /depth /mask are VDS -> padded to (Hmax, W)
+    top-left via fillvalue, real region exact."""
     T = 4
     sizes = [(64, 96), (48, 96), (32, 96)]          # W=96 shared, H varies -> Hmax=64
     paths = [str(tmp_path / f"c{i}.h5") for i in range(3)]
@@ -55,25 +57,27 @@ def test_rig_mixed_hw(tmp_path):
         assert rig.scene.shape == (T, 3, 64, 96)
         H, W = 64, 96
         for n, (h, w) in enumerate(sizes):
+            # rgb: ExternalLink -> the camera's native (h, w), not padded
             rgb = rig.rgb(0, n)
-            assert rgb.shape == (H, W, 3)
-            assert (rgb[:h, :w] > 0).all()          # real region
-            if h != H:
-                assert rgb[h:, :].sum() == 0        # padded rows black
+            assert rgb.shape == (h, w, 3)
+            assert (rgb > 0).all()                   # whole real region
+            # depth / mask: VDS -> padded to (Hmax, W), top H rows real
             d = rig.depth(0, n)
             assert d.shape == (H, W)
-            assert (d[:h, :w] > 0).all()            # real mm > 0
+            assert (d[:h, :w] > 0).all()             # real mm > 0
             if h != H:
-                assert d[h:, :].sum() == 0          # padded rows invalid
+                assert d[h:, :].sum() == 0           # padded rows invalid
             dm = rig.depth_mask(0, n)
             assert dm[:h, :w].all()
             if h != H:
                 assert not dm[h:, :].any()
-        # /depth is a VIRTUAL dataset: 0 bytes stored in the rig file
+        # /depth is a VDS (0 bytes); /rgb entries are ExternalLinks (no copy)
         with h5py.File(out, "r") as h:
             assert h["depth"].id.get_storage_size() == 0
-            assert sum(h["rgb"][k].id.get_storage_size() for k in h["rgb"]) > 0  # rgb copied
-            assert "cam_files" in h.attrs
+            for k in h["rgb"]:
+                assert isinstance(h.get(f"rgb/{k}", getlink=True), h5py.ExternalLink)
+            assert "cam_files" in h.attrs and "cam_hw" in h.attrs
+            assert [tuple(x) for x in h.attrs["cam_hw"]] == sizes
     finally:
         rig.close()
 

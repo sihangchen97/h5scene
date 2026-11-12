@@ -1,23 +1,25 @@
 """H5Cam (single-camera sequence, shape (T, H, W)) and H5CamRig (N H5Cam
--> one multi-camera H5Scene file (T, N, Hmax, Wmax), maintained via HDF5
-VIRTUAL DATASETS).
+-> one multi-camera H5Scene file (T, N, Hmax, Wmax), maintained as REFERENCES
+only — nothing is copied into the rig file (verified 2026-11-13).
 
-H5CamRig build (verified 2026-11-13):
+H5CamRig build:
 - STRICT checks: same T, same is_metric, same section set (depth/mask/K/T/
   depth_conf), rgb per-frame size == declared (H, W), depth/depth_conf/mask
   per-frame size == frame 0, and H or W identical across ALL cameras
   (the other axis is taken as max; both axes differ -> rejected).
-- /rgb: physically copied (jpg variable-length byte strings cannot be
-  virtual datasets) — verbatim for full-size cameras, decode+pad+re-encode
-  (jpg q95) for smaller ones, top-left aligned, black fill.
+- /rgb: ExternalLinks to each camera's own /rgb/{t} — 0 bytes in the rig
+  file, no copy, no re-encode. rgb(t, n) therefore decodes at camera n's
+  NATIVE (H, W) (per camera), not the common (Hmax, Wmax).
 - /depth /mask /K /T /depth_conf: VIRTUAL datasets referencing the camera
   files — 0 bytes on disk in the rig file, the cameras' compressed data
-  mapped directly. Full-size camera: one block per camera; smaller camera:
-  per-frame blocks (H, W) -> (t, n, :H, :W) with fillvalue covering the
-  pad region (0 = invalid / False = padding) — matches the stored sentinels.
-- attrs.cam_files: the source camera files. H5CamRig(open) verifies they
-  all exist, because a missing source makes VDS reads SILENTLY return the
-  fillvalue (0) instead of erroring.
+  mapped directly, at (T, N, Hmax, Wmax). Smaller cameras: per-frame blocks
+  (h, w) -> (t, n, :h, :w) with fillvalue covering the pad region
+  (0 = invalid / False = padding) — matches the stored sentinels, so
+  depth/depth_conf/mask read back at the common (Hmax, Wmax).
+- attrs.cam_files (absolute) + attrs.cam_hw (per-camera (H, W)).
+  H5CamRig(open) verifies cam_files exist, because a missing/renamed source
+  makes VDS reads SILENTLY return the fillvalue and ExternalLinks raise
+  KeyError instead of erroring clearly.
 - the result is a plain H5Scene file (attrs.TNHW, /rgb t_n keys, /meta):
   open with H5Scene; H5CamRig(open) adds the source-file guard.
 """
@@ -27,8 +29,7 @@ import cv2
 import h5py
 import numpy as np
 
-from .convert import _to_depth_conf, _to_depth_mm, _to_mask, _depth_hw_ok
-from .rgb import _encode_jpg, _JPG_QUALITY
+from .convert import _broadcast, _to_depth_conf, _to_depth_mm, _to_mask, _depth_hw_ok
 from .scene import H5Scene
 
 _SECTIONS = (("depth", np.uint16, 0, (2,)),          # name, dtype, fillvalue, (h,w) rank
@@ -197,9 +198,19 @@ class H5CamRig:
             return
         self._build(cam_paths, meta)
 
+    @property
+    def cam_files(self):
+        """List[str] of the source camera files (absolute) this rig references."""
+        return [str(p) for p in self.scene._h.attrs["cam_files"]]
+
+    @property
+    def cam_hw(self):
+        """List[(H, W)] of each camera's native resolution, in cam order."""
+        return [tuple(int(x) for x in row) for row in self.scene._h.attrs["cam_hw"]]
+
     def close(self):
         if self._h is not None:
-            if hasattr(self, "scene"):
+            if "scene" in self.__dict__:
                 self.scene.close()
             else:
                 self._h.close()
@@ -257,21 +268,17 @@ class H5CamRig:
             with h5py.File(self.path, "w", libver="latest") as h:
                 h.attrs["TNHW"] = np.array((T, N, H, W), np.int64)
                 h.attrs["is_metric"] = is_metric
-                h.attrs["cam_files"] = np.array([os.path.abspath(c.path) for c in cams], dtype=_STR)
-                # /rgb: physical copy (variable-length jpg, not virtualizable)
+                abs_paths = [os.path.abspath(c.path) for c in cams]
+                h.attrs["cam_files"] = np.array(abs_paths, dtype=_STR)
+                h.attrs["cam_hw"] = np.array([(c.H, c.W) for c in cams], np.int64)
+                # /rgb: nothing stored — each (t, n) is an ExternalLink to the
+                # camera's own /rgb/{t} (variable-length jpg cannot be a virtual
+                # dataset). rgb(t, n) therefore decodes at camera n's NATIVE
+                # (H, W); the pad-to-common-HW only happens for the VDS sections.
                 rg = h.create_group("rgb")
                 for n, c in enumerate(cams):
-                    full = (c.H, c.W) == (H, W)
                     for t in range(T):
-                        b = c._h["rgb"][f"{t}"][:]
-                        if full:
-                            rg.create_dataset(f"{t}_{n}", data=b)      # verbatim (b is a uint8 array)
-                        else:
-                            img = cv2.imdecode(b, cv2.IMREAD_COLOR)
-                            canvas = np.zeros((H, W, 3), np.uint8)     # pad top-left, black
-                            canvas[:c.H, :c.W] = img
-                            b = _encode_jpg(canvas, _JPG_QUALITY)
-                            rg.create_dataset(f"{t}_{n}", data=np.frombuffer(bytes(b), np.uint8))
+                        rg[f"{t}_{n}"] = h5py.ExternalLink(abs_paths[n], f"/rgb/{t}")
                 # fixed-shape sections: virtual datasets referencing the cameras
                 for name, dtype, fill, rank in _SECTIONS:
                     if name not in secs:

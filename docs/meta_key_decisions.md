@@ -1,31 +1,27 @@
 # h5scene metadata 键值决策(2026-11-13)
 
-> **2026-11-13 架构决定(H5Cam / H5CamRig 拆分,VDS 版已验证)**:H5Scene 拆成
-> 单相机序列类 **H5Cam**(形状 (T, H, W),attrs.THW,/rgb/{t},…)+ 多相机融合
-> **H5CamRig**(N 个 H5Cam → 一个 (T, N, Hmax, Wmax) 文件,即现有 H5Scene 布局,
-> 可直接被 H5Scene 打开;H5CamRig(open) 额外校验源相机文件在)。
-> **VDS(HDF5 virtual datasets,经 h5py VirtualLayout/VirtualSource/
-> create_virtual_dataset 实现)**:定长 section /depth /mask /K /T /depth_conf
-> **零拷贝引用**相机文件(rg 文件内 0 字节,源文件的 gzip4 压缩数据直接映射,
-> 零重压缩);/rgb 是变长 jpg 字节串,**VDS 映射不了,物理拷贝**(已是 (Hmax,Wmax)
-> 的相机原样拷字节,小相机 decode+pad+重编码 q95 一次)。
-> 关键约束(已用 tests/test_rig.py 7 项验证):**某一边(H 或 W)必须在所有相机上
-> 相同**(另一侧才可不同,取 max)——两边都不同直接拒绝;小相机补全到 (Hmax, Wmax)
-> **左上对齐**,rgb 黑补 / depth·depth_conf 0 补(= 无效)/ mask False 补(= padding),
-> VDS 的 **fillvalue 恰好就是这些补全值**(0/False),下游 depth_mask 恰好落在各
-> 相机真实像素区,读取零合成零 resize。逐帧 block 映射(每帧 (h,w) 块 → 虚拟
-> (t,n,:h,:w),元素数必须相等;整相机一块仅当帧形状==(Hmax,Wmax) 且相机满尺寸)。
-> **严格 check**(merge 时拒绝):T 一致、is_metric 一致、section 集合一致、rgb
-> 每帧尺寸 == 声明 (H, W)、depth/depth_conf/mask 每帧尺寸 == 帧 0、H 或 W 之一
-> 全相机相同。
-> **VDS 的坑(已验证,必须知道)**:① 源文件被删/改名时 **VDS 读取静默返回
-> fillvalue(0),不报错**——所以 attrs.cam_files 记录源清单,H5CamRig(open)
-> 校验存在性,缺了就报 FileNotFoundError(绝不静默读 0);② 相对路径引用相对
-> rg 文件位置解析(rg 与相机文件移动要一起移);③ VDS 不能对虚拟数据集再压缩
-> (storage 恒 0,源文件的压缩已生效)。
-> 效率:4 cam × T20 × 480×640 (rgb+depth) merge ≈ **4.8 ms/frame**(物理拷贝版
-> 21 ms/frame;输出 23 MB vs 75 MB,depth 部分 0 字节)。
-> 实现:h5scene/rig.py(H5Cam + H5CamRig)。
+> **2026-11-13 架构决定(H5Cam / H5CamRig 拆分,纯引用版已验证)**:H5Scene 拆成
+> 单相机序列类 **H5Cam**(形状 (T, H, W),attrs.THW,/rgb/{t} 每帧一个 dataset)+
+> 多相机融合 **H5CamRig**(N 个 H5Cam → 一个 (T, N, Hmax, Wmax) 文件,可直接被
+> H5Scene 打开;H5CamRig(open) 额外校验源相机文件在)。**rg 文件零数据,纯引用**:
+> - /rgb → 每 (t,n) 一个 **ExternalLink 指到相机文件的 /rgb/{t}**(jpg 变长字节串
+>   既不能 VDS 也不需要拷):零拷贝零重编码,**rgb(t,n) 按该相机原生 (H,W) 解码**。
+> - /depth /mask /K /T /depth_conf → **VDS 虚拟数据集**引用相机文件(rg 内 0 字节,
+>   源 gzip4 压缩数据直接映射),按 (T,N,Hmax,Wmax);小相机逐帧 block 映射
+>   (每帧 (h,w) 块 → (t,n,:h,:w),元素数相等),余区 **fillvalue** 覆盖(0/False
+>   恰是存储哨兵)→ depth/mask 读回是公共 (Hmax,Wmax),depth_mask 落在真实区。
+> - 关键约束(7 项测试验证):**某一边(H 或 W)必须全相机相同**(另一边取 max)——
+>   两边都不同拒绝;严格 check:T 一致、is_metric 一致、section 集合一致、rgb
+>   每帧尺寸 == 声明 (H,W)、depth/depth_conf/mask 每帧尺寸 == 帧 0。
+> - **VDS/引用 的坑(已验证)**:① 源文件被删/改名:VDS **静默返回 fillvalue(0)
+>   不报错**、ExternalLink 读 KeyError——attrs.cam_files(绝对路径)+ cam_hw 记录,
+>   H5CamRig(open) 校验缺失即抛 FileNotFoundError,绝不静默读 0;② 相对路径引用
+>   相对 rg 文件位置解析(rg 与相机要一起移);③ VDS 不能再压缩(storage 恒 0,
+>   源文件压缩已生效)。
+> - **效率**:4 cam × T20 × 480×640 (rgb+depth) build ≈ **4.4 ms/frame**,
+>   **rg 文件 0 字节**(纯 attrs+链接+VDS 布局);访问时从源文件读(源文件常驻)。
+> - 实现:h5scene/rig.py(H5Cam + H5CamRig)。
+
 
 > **2026-11-13 补充决定(4 键定位键)**:来源三键 `scene_path` / `source_dataset` / `scene_ids`
 > 退役,改为 4 个定位键 **`dataset` / `scene` / `seq` / `suffix`**。
