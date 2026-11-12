@@ -1,5 +1,5 @@
 """Input-shape conversion helpers: mask / depth / depth_conf / K / pose, and
-the (h, w) < (H, W) depth aspect-ratio + resize rules shared by scene.py."""
+the (h, w) < (H, W) depth aspect-ratio + resize rules shared by H5Cam and H5CamRig."""
 import cv2
 import numpy as np
 
