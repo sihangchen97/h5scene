@@ -139,6 +139,7 @@ class H5Base:
             raise ValueError(f"unknown attr {name!r}; known: {tuple(self.ATTR_KEYS)}")
         self._check_attr_value(name, value)
         self._h.attrs[name] = value
+        return self
 
     # ---- generic /meta access (checked against META_KEYS) ----
     def meta(self, name):
@@ -157,27 +158,48 @@ class H5Base:
             return out.decode() if isinstance(out, bytes) else out
         return v[:]
 
-    def set_meta(self, name, value):
-        """/meta/<name>: value = set/replace (str, an int64 array for
-        frame_indices, or a dict[str, str] for tags), None = remove if present.
-        The value is validated BEFORE the old value is deleted."""
-        if name not in self.META_KEYS:
-            raise ValueError(f"unknown meta key {name!r}; known: {tuple(self.META_KEYS)}")
-        if value is not None:                        # validate first
-            self._check_meta_spec(name, value)
-        m = self._h.require_group("meta")
-        if name in m:
-            del m[name]
-        if value is None:                            # None = remove if present
-            return
-        if isinstance(value, dict):                 # a /meta/<name>/ group of str
-            tg = m.create_group(name)
-            for k, v in value.items():
-                tg.create_dataset(k, data=np.array(v, dtype=_STR))
-        elif isinstance(value, np.ndarray):         # an array key (dtype-checked)
-            m.create_dataset(name, data=value.astype(np.int64))
-        else:                                        # a str key
-            m.create_dataset(name, data=np.array(str(value), dtype=_STR))
+    def set_meta(self, name=None, value=None, **kw):
+        """/meta/<name>: two equivalent forms (the base form is the ONLY
+        set_meta — subclasses do not override it):
+          - set_meta(name, value): a single key; value = set/replace (str,
+            an int64 array for frame_indices, or a dict[str, str] for tags),
+            None = remove if present.
+          - set_meta(dataset=…, scene=…, …): a multi-key convenience — set
+            the given keys, leave the rest as-is (a keyword given as None
+            means "do not touch"; for a single key, None = remove).
+        The values are validated BEFORE any old value is deleted."""
+        if name is not None:                        # single-key form
+            if name not in self.META_KEYS:
+                raise ValueError(f"unknown meta key {name!r}; known: {tuple(self.META_KEYS)}")
+            if value is not None:                   # validate first
+                self._check_meta_spec(name, value)
+            value = self._meta_value(name, value)  # subclass transform (None = drop)
+            m = self._h.require_group("meta")
+            if name in m:
+                del m[name]
+            if value is None:                       # None = remove if present
+                return self
+            if isinstance(value, dict):             # a /meta/<name>/ group of str
+                tg = m.create_group(name)
+                for k, v in value.items():
+                    tg.create_dataset(k, data=np.array(v, dtype=_STR))
+            elif isinstance(value, np.ndarray):    # an array key (dtype-checked)
+                m.create_dataset(name, data=value.astype(np.int64))
+            else:                                   # a str key
+                m.create_dataset(name, data=np.array(str(value), dtype=_STR))
+            return self
+        if not kw:                                  # set_meta() with nothing to do
+            return self
+        for name, value in kw.items():
+            if value is None:                       # multi-key: None = leave as-is
+                continue
+            self.set_meta(name, value)             # recurse: single-key form
+        return self
+
+    # ---- subclass hook: transform a validated value (None = drop, e.g. H5Cam
+    #    does not store a dense frame_indices) ----
+    def _meta_value(self, name, value):
+        return value
 
     # ---- type checking (shared) ----
     def _check_attr_value(self, name, value):

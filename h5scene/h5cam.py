@@ -42,6 +42,9 @@ class H5Cam(H5Base):
 
     def __init__(self, path, t=None, h=None, w=None, is_metric=False, mode=None):
         if t is not None:
+            if isinstance(t, str):                 # H5Cam(p, "r+") — a mode in t's slot
+                raise TypeError(f"t (frame count) got a str {t!r}; to open an "
+                                f"existing file use H5Cam.open({path!r}, {t!r})")
             if any(x is None for x in (h, w)) or any(v < 1 for v in (t, h, w)):
                 raise ValueError("create mode needs T, H, W >= 1")
             super().__init__(path, create=True)
@@ -160,30 +163,13 @@ class H5Cam(H5Base):
     def tags(self):
         return self.meta("tags")
 
-    # ---- the multi-key meta convenience (set_ leaves keys not given alone) ----
-    def set_meta(self, dataset=None, scene=None, seq=None, suffix=None, split=None,
-                 meta_json=None, frame_indices=None, tags=None, is_metric=None):
-        """The location/data keys at once: a value = set, None = leave as-is
-        (the base single-key form, H5Base.set_meta(name, value), uses
-        None = remove). frame_indices: only stored when != arange(T) (dense:
-        t already is the source frame); must be length T. is_metric -> attrs.
-        The per-key types are the ones in THIS class's META_KEYS."""
-        if is_metric is not None:
-            self.set_attr("is_metric", bool(is_metric))
-        for name, val in (("dataset", dataset), ("scene", scene), ("seq", seq),
-                          ("suffix", suffix), ("split", split), ("meta_json", meta_json),
-                          ("tags", tags)):
-            if val is not None:
-                H5Base.set_meta(self, name, val)
-        if frame_indices is not None:
-            fi = np.asarray(frame_indices)
-            self._check_meta_spec("frame_indices", fi)   # dtype + length T (clear error)
-            if (fi == np.arange(self.T)).all():
-                H5Base.set_meta(self, "frame_indices", None)   # dense: drop it
-            else:
-                H5Base.set_meta(self, "frame_indices", fi.astype(np.int64))
-        return self
+    # ---- frame_indices semantics: dense (== arange(T)) is not stored ----
+    def _meta_value(self, name, value):
+        if name == "frame_indices" and (value == np.arange(self.T)).all():
+            return None                             # dense: drop it
+        return value
 
+    # ---- writers (T semantics; codecs/ owns the encoding policy) ----
     # ---- writers (T semantics; codecs/ owns the encoding policy) ----
     def set_rgb(self, rgb):
         """(T,H,W,3) uint8 RGB array / an (H,W,3) array (T=1) / a flat (T,)

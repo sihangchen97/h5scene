@@ -67,7 +67,7 @@ H5Cam usage:
     cam.dataset, cam.scene, cam.seq, cam.suffix, cam.split, cam.meta_json
     cam.frame_indices, cam.tags
     cam.set_attr("is_metric", True); cam.attr("THW")     # the base accessors
-    H5Base.set_meta(cam, "scene", "x")                   # the single-key base form
+    cam.set_meta("scene", "x")                          # single-key form (None = remove)
 
 H5CamRig usage:
 

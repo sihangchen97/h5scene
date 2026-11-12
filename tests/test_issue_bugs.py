@@ -10,7 +10,7 @@ import numpy as np
 import pytest
 import h5py
 
-from h5scene import H5Cam, H5CamRig
+from h5scene import H5Base, H5Cam, H5CamRig
 from h5scene.codecs import decode_rgb, encode_rgb
 
 
@@ -133,6 +133,29 @@ def test_frame_indices_length_enforced(tmp_path):
     with H5Cam.open(str(tmp_path / "c.h5"), "r+") as cam:
         cam.set_meta(frame_indices=np.arange(3))
         assert cam.frame_indices is None
+
+
+def test_h5cam_mode_in_t_slot_is_a_clear_error(tmp_path):
+    """H5Cam(p, "r+") puts a mode string in the t (frame-count) slot — give a
+    clear pointer to H5Cam.open() instead of the misleading create error."""
+    with pytest.raises(TypeError, match="H5Cam.open"):
+        H5Cam(str(tmp_path / "c.h5"), "r+")
+
+
+def test_set_meta_is_not_overridden(tmp_path):
+    """#31: the base set_meta is the ONLY one (no subclass shadow) — both forms
+    live on H5Base: single-key (name, value / None) and multi-key (kw=...)."""
+    assert H5Cam.set_meta is H5Base.set_meta       # not shadowed anymore
+    with H5Cam(str(tmp_path / "c.h5"), 3, 8, 8) as cam:
+        assert cam.set_meta("scene", "s") is cam
+        assert cam.meta("scene") == "s"
+        assert cam.set_meta(dataset="d", seq="q") is cam      # multi-key form
+        assert cam.meta("dataset") == "d" and cam.meta("seq") == "q"
+        assert cam.meta("scene") == "s"                        # untouched keys stay
+        cam.set_meta(scene=None)                               # multi-key: None = leave as-is
+        assert cam.meta("scene") == "s"
+        cam.set_meta("scene", None)                           # single-key remove
+        assert cam.meta("scene") is None
 
 
 def test_rig_rejects_empty_and_duplicate_paths(tmp_path):

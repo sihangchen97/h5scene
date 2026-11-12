@@ -68,7 +68,7 @@ with H5Cam.open("cam.h5") as cam:   # open: read-only by default (mode="r" or "r
 with H5Cam.open("cam.h5", "r+") as cam:   # writable: the generic single-key accessors
     cam.set_attr("is_metric", True)
     from h5scene import H5Base
-    H5Base.set_meta(cam, "scene", "x")   # single-key: value = set, None = remove
+    cam.set_meta("scene", "x")            # single-key form: value = set, None = remove
 
 # N cameras -> one references-only file (0 bytes of data in the rig file)
 rig = H5CamRig.build("rig.h5", ["cam0.h5", "cam1.h5", …], suffix="q")
