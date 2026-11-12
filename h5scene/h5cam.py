@@ -31,7 +31,7 @@ class H5Cam(H5Base):
                  "seq": str,               # sequence
                  "suffix": str,            # variant marker (train/val, camera/version)
                  "split": str,             # train/val split
-                 "frame_indices": MetaSpec(np.ndarray, dtype=np.int64, length="T"),
+                 "src_frame_idxs": MetaSpec(np.ndarray, dtype=np.int64, length="T"),
                  "tags": MetaSpec(dict)}   # /meta/tags/* utf-8 (str values)
 
     def __init__(self, path, t=None, h=None, w=None, is_metric=False, mode=None):
@@ -145,17 +145,17 @@ class H5Cam(H5Base):
         return self.meta("split")
 
     @property
-    def frame_indices(self):
-        fi = self.meta("frame_indices")
+    def src_frame_idxs(self):
+        fi = self.meta("src_frame_idxs")
         return None if fi is None else fi
 
     @property
     def tags(self):
         return self.meta("tags")
 
-    # ---- frame_indices semantics: dense (== arange(T)) is not stored ----
+    # ---- src_frame_idxs semantics: dense (== arange(T)) is not stored ----
     def _meta_value(self, name, value):
-        if name == "frame_indices" and (value == np.arange(self.T)).all():
+        if name == "src_frame_idxs" and (value == np.arange(self.T)).all():
             return None                             # dense: drop it
         return value
 

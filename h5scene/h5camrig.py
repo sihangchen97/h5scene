@@ -56,18 +56,18 @@ class H5CamRig(H5Base):
     (rgb/depth/mask/K/pose/depth_conf/depth_mask + meta) are (T, N) methods
     on this class, built on the codecs/ decode helpers."""
 
-    # (name -> expected type); the rig has NO "seq" and NO "frame_indices" —
+    # (name -> expected type); the rig has NO "seq" and NO "src_frame_idxs" —
     # it IS the merged time axis (the cameras' per-source frame numbers have
     # no single meaning for the merged axis). META_KEYS is DERIVED from
     # H5Cam's (the source camera's registry): cam keys minus "seq" and
-    # "frame_indices", plus the rig's own "suffix".
+    # "src_frame_idxs", plus the rig's own "suffix".
     ATTR_KEYS = {"TNHW": np.ndarray,       # int64 (4,) = (T, N, Hmax, Wmax)
                  "is_metric": bool,
                  "cam_files": np.ndarray,  # str[] absolute source cam files
                  "cam_hw": np.ndarray,     # int64 (N, 2) per-camera (H, W)
                  "cam_fp": np.ndarray}     # int64 (N, 5) = (T, H, W, size, mtime_ns)
     META_KEYS = {**{k: v for k, v in H5Cam.META_KEYS.items()
-                    if k not in ("seq", "frame_indices")},
+                    if k not in ("seq", "src_frame_idxs")},
                  "suffix": str}            # this rig's own variant marker
 
     @classmethod

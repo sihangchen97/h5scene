@@ -39,7 +39,7 @@
   /meta/seq            str 序列(定位键 3,单相机才有)
   /meta/suffix         str 变体标记(train/val、相机/版本;定位键 4)
   /meta/split          str 标量(train/val/test)
-  /meta/frame_indices  int64 (T,) 源帧号;仅 != arange(T) 时才写(dense 丢弃)
+  /meta/src_frame_idxs  int64 (T,) 源帧号;仅 != arange(T) 时才写(dense 丢弃)
   /meta/tags/*         str 数据集侧标签(data_type/dynamics/environment/
                        view_density/view_type …),/meta/tags/ 子组,缺失的标签不写键
 ```
@@ -76,7 +76,7 @@
   /meta/suffix       str rig 自己的变体标记(build 参数,默认空 = 不写)
   /meta/split        str 所有相机一致才继承
   /meta/tags/*       str 所有相机一致才继承(/meta/tags/ 子组)
-  # 没有 seq(合并后就是时间轴本身),也没有 frame_indices(各源帧号对合并轴无单一意义)
+  # 没有 seq(合并后就是时间轴本身),也没有 src_frame_idxs(各源帧号对合并轴无单一意义)
 ```
 
 - build 校验(全在写文件前;write-temp-then-rename,失败不碰已有输出):

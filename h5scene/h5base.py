@@ -145,7 +145,7 @@ class H5Base:
 
     # ---- generic /meta access (checked against META_KEYS) ----
     def meta(self, name):
-        """/meta/<name>: str (or dict for tags, np.ndarray for frame_indices),
+        """/meta/<name>: str (or dict for tags, np.ndarray for src_frame_idxs),
         None when absent."""
         if name not in self.META_KEYS:
             raise ValueError(f"unknown meta key {name!r}; known: {tuple(self.META_KEYS)}")
@@ -164,7 +164,7 @@ class H5Base:
         """/meta/<name>: two equivalent forms (the base form is the ONLY
         set_meta — subclasses do not override it):
           - set_meta(name, value): a single key; value = set/replace (str,
-            an int64 array for frame_indices, or a dict[str, str] for tags),
+            an int64 array for src_frame_idxs, or a dict[str, str] for tags),
             None = remove if present.
           - set_meta(dataset=…, scene=…, …): a multi-key convenience — set
             the given keys, leave the rest as-is (a keyword given as None
@@ -199,7 +199,7 @@ class H5Base:
         return self
 
     # ---- subclass hook: transform a validated value (None = drop, e.g. H5Cam
-    #    does not store a dense frame_indices) ----
+    #    does not store a dense src_frame_idxs) ----
     def _meta_value(self, name, value):
         return value
 

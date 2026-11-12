@@ -41,11 +41,11 @@ def test_subclass_registries_are_checked(tmp_path):
         cam.set_attr("is_metric", True)
         H5Base.set_meta(cam, "scene", "s")            # the base single-key accessor
         H5Base.set_meta(cam, "tags", {"data_type": "syn"})
-        H5Base.set_meta(cam, "frame_indices", np.array([3, 7]))
+        H5Base.set_meta(cam, "src_frame_idxs", np.array([3, 7]))
         assert bool(cam.attr("is_metric")) is True
         assert cam.meta("scene") == "s"
         assert cam.meta("tags") == {"data_type": "syn"}
-        assert list(cam.meta("frame_indices")) == [3, 7]
+        assert list(cam.meta("src_frame_idxs")) == [3, 7]
         # unknown keys (both accessors are registry-checked)
         with pytest.raises(ValueError, match="unknown attr"):
             cam.set_attr("bogus", 1)

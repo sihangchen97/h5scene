@@ -35,7 +35,7 @@ their own frame: `h['depth'][t]` vs `h['depth'][t, n]`).
   #   dataset/scene = the location identity; seq = the camera's sequence (H5Cam
   #   only); (dataset, scene, seq) shared by several h5 = the same scene's
   #   multi-view cameras -> merge them with H5CamRig
-  /meta/frame_indices  int64 (T,) source frame numbers       [optional]
+  /meta/src_frame_idxs  int64 (T,) source frame numbers       [optional]
   /meta/tags/*         utf-8 (data_type/dynamics/environment/…) [optional]
   attrs: is_metric bool (data-side)
          H5Cam:  THW = int64 (T, H, W)

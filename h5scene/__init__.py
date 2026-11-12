@@ -40,7 +40,7 @@ axis onto it — written "[N]" where the rig adds one axis):
               The location identity: (dataset, scene[, seq]) shared by several
               h5 = the same scene's cameras; seq is per-camera (the rig has
               none); suffix marks variants — see docs/schema.md
-      /meta/frame_indices  int64 (T,) source frame numbers        [optional]
+      /meta/src_frame_idxs  int64 (T,) source frame numbers        [optional]
       /meta/tags/*         utf-8 strings (data_type/dynamics/...)  [optional]
       attrs: is_metric bool (data-side)
              H5Cam:  THW = int64 (T, H, W)
@@ -55,7 +55,7 @@ H5Cam usage:
     cam.set_depth(d); cam.set_depth_conf(c); cam.set_mask(m)
     cam.set_K(K); cam.set_pose(P)
     cam.set_meta(dataset=..., scene=..., seq=..., suffix=..., split=...,
-                 frame_indices=..., tags={...})   # multi-key
+                 src_frame_idxs=..., tags={...})   # multi-key
     cam.close()                          # (or: with H5Cam.create(...) as cam: ...)
 
     cam = H5Cam.open(path)               # open an existing file ("r" / "r+")
@@ -64,7 +64,7 @@ H5Cam usage:
     cam.depth(t, meters=...) / cam.K(t) / cam.pose(t) / cam.mask(t) / cam.depth_conf(t)
     cam.depth_mask(t, conf_min=...)
     cam.dataset, cam.scene, cam.seq, cam.suffix, cam.split
-    cam.frame_indices, cam.tags
+    cam.src_frame_idxs, cam.tags
     cam.set_attr("is_metric", True); cam.attr("THW")     # the base accessors
     cam.set_meta("scene", "x")                          # single-key form (None = remove)
 
