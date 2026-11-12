@@ -42,9 +42,9 @@ their own frame: `h['depth'][t]` vs `h['depth'][t, n]`).
          H5CamRig: TNHW = int64 (T, N, Hmax, Wmax),
                    cam_files = str[] source cam files relative to the rig's
                    directory (VDS/ExternalLinks resolve them the same way),
-                   cam_hw = int64 (N, 2) per-camera (H, W),
-                   cam_fp = int64 (N, 4) per-camera (T, H, W, size) content
-                   fingerprint (open verifies it; THW is read from the camera)
+                   cam_hw = int64 (N, 2) per-camera (H, W)
+                   (open re-reads each camera's THW and checks (T, *cam_hw[n])
+                   plus every mapped section's presence + shape)
 ```
 
 ## Usage
@@ -77,8 +77,8 @@ with H5Cam.open("cam.h5", "r+") as cam:   # writable: the generic single-key acc
 # N cameras -> one references-only file (0 bytes of data in the rig file)
 rig = H5CamRig.build("rig.h5", ["cam0.h5", "cam1.h5", …], suffix="q")
 #   out path must not be one of the cameras; the output dir is created
-with H5CamRig.open("rig.h5") as rig:   # verifies the cameras still match the
-                                       # content fingerprint (THW + size)
+with H5CamRig.open("rig.h5") as rig:   # verifies the cameras still match
+                                       # (T, *cam_hw[n]) + mapped sections
     rig.shape                                  # (T, N, Hmax, Wmax)
     rig.rgb(t, n) / rig.bgr(t, n)          # camera n's NATIVE (H, W, 3) RGB / BGR
     rig.depth_mm(t, n); rig.depth_meters(t, n); rig.depth_mask(t, n)

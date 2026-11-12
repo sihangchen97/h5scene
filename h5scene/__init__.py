@@ -18,8 +18,8 @@ Three classes (H5Cam and H5CamRig both inherit H5Base):
   axis); H or W identical across cameras (the other = max, top-left aligned,
   pad covered by the VDS fillvalue). rgb(t, n) decodes at camera n's NATIVE
   (H, W); the VDS sections at the common (Hmax, Wmax). attrs: TNHW, is_metric,
-  cam_files (relative to the rig file), cam_hw, cam_fp (per-camera content
-  fingerprint, verified on open).
+  cam_files (relative to the rig file), cam_hw (per-camera (H, W); the camera
+  THW at build time = (T, *cam_hw[n]), verified on open).
 
 File layout (H5Cam = the scene layout with N collapsed; H5CamRig maps the N
 axis onto it — written "[N]" where the rig adds one axis):
@@ -51,8 +51,8 @@ axis onto it — written "[N]" where the rig adds one axis):
                        rig file's directory (the VDS/ExternalLinks resolve
                        them the same way — a rig moved with its cameras works),
                        cam_hw = int64 (N, 2) per-camera (H, W),
-                       cam_fp = int64 (N, 3) per-camera (T, H, W) — the
-                       camera's own THW, re-read from the camera at open,
+                       cam_hw = int64 (N, 2) per-camera (H, W); open re-reads
+                       each camera's attrs.THW and checks (T, *cam_hw[n])
                        together with the mapped sections' presence + shapes
 
 H5Cam usage:
@@ -82,7 +82,7 @@ H5CamRig usage:
 
     rig = H5CamRig.build(path, cam_paths, suffix=...)   # validate (out path not
                                                         # a camera), mkdir, temp, rename
-    rig = H5CamRig.open(path)                           # verifies the cam content fingerprint
+    rig = H5CamRig.open(path)                           # verifies the cam THW + sections
     rig.shape                                   # (T, N, Hmax, Wmax)
     rig.rgb(t, n) / rig.bgr(t, n)   rig.depth_mm(t, n) / rig.depth_meters(t, n)
                                              # (Hmax, Wmax); pad = 0/False

@@ -103,8 +103,9 @@ def test_set_meta_type_error_does_not_erase(tmp_path):
 
 
 def test_rig_open_detects_rewritten_camera(tmp_path):
-    """#20: opening a rig must verify the camera files still match the stored
-    fingerprint (THW + size), not just that they exist."""
+    """#20: opening a rig must verify each camera's THW is still
+    (T, *cam_hw[n]) and its mapped sections intact, not just that the file
+    exists."""
     a = _cam(str(tmp_path / "a.h5"), 3, 32, 64, seed=1)
     b = _cam(str(tmp_path / "b.h5"), 3, 32, 64, seed=2)
     out = str(tmp_path / "rig.h5")
@@ -284,8 +285,8 @@ def test_rig_survives_cp_and_moves_with_cameras(tmp_path):
     H5CamRig.build(out, [a, b]).close()
     with h5py.File(out) as h:
         assert [str(p) for p in h.attrs["cam_files"]] == ["a.h5", "b.h5"]
-        assert h.attrs["cam_fp"].shape == (2, 3)    # (T, H, W) content
-    # byte-identical copy (cp) must open fine — the fingerprint is content-based
+        assert h.attrs["cam_hw"].tolist() == [[32, 64], [32, 64]]    # per-camera (H, W)
+    # byte-identical copy (cp) must open fine — open checks the THW, not the file size
     moved = tmp_path / "elsewhere"
     moved.mkdir()
     Path(out).replace(moved / "rig.h5")              # the rig moves too
@@ -317,13 +318,14 @@ def test_depth_zero_hw_is_rejected_cleanly(tmp_path):
 
 
 def test_create_rejects_non_integral_thw(tmp_path):
-    """#75: a float T/H/W is rejected (int() would silently truncate 2.7 -> 2)."""
+    """#75/#80: a non-integral T/H/W is a TypeError (int() would silently
+    truncate 2.7 -> 2); bool is rejected too (operator.index(True) == 1)."""
     p = str(tmp_path / "c.h5")
-    for bad in ((2.7, 8, 8), (2, 0.5, 8), (2, 8, "8")):
-        with pytest.raises(ValueError, match="integral"):
+    for bad in ((2.7, 8, 8), (2, 0.5, 8), (2, 8, "8"), (True, 8, 8), (2, False, 8)):
+        with pytest.raises(TypeError, match="integral"):
             H5Cam.create(p, *bad)
     assert not Path(p).exists()                  # no half-made file
-    # numpy ints and exact floats are fine
+    # numpy ints are fine
     with H5Cam.create(p, np.int64(2), 8, 8) as cam:
         assert cam.T == 2
 
@@ -341,15 +343,14 @@ def test_open_requires_is_metric(tmp_path):
     with _h.File(p, "w") as h:                  # same for a rig-shaped file
         h.attrs.update(TNHW=np.array((2, 1, 8, 8), np.int64),
                        cam_files=np.array(["a.h5"], dtype=_h.string_dtype()),
-                       cam_hw=np.array([(8, 8)], np.int64),
-                       cam_fp=np.array([(2, 8, 8)], np.int64))
+                       cam_hw=np.array([(8, 8)], np.int64))
         h.create_group("meta")
     with pytest.raises(ValueError, match="not an H5CamRig file"):
         H5CamRig.open(p)
 
 
 def test_camera_meta_edit_does_not_break_rig_open(tmp_path):
-    """#71: the fingerprint is the camera THW, not the file size — a
+    """#71: open checks the camera THW, not the file size — a
     metadata edit (which grows the HDF5 file) must NOT break the rig."""
     a = _cam(str(tmp_path / "a.h5"), 3, 32, 64, seed=1)
     b = _cam(str(tmp_path / "b.h5"), 3, 32, 64, seed=2)

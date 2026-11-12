@@ -57,12 +57,15 @@ class H5Cam(H5Base):
     @classmethod
     def create(cls, path, t, h, w, is_metric=False):
         """Create a new file (overwriting); T, H, W INTEGRAL and >= 1
-        (2.7 is rejected — int() would silently truncate it)."""
+        (2.7 raises — int() would silently truncate it; True is rejected too)."""
+        if any(isinstance(v, bool) for v in (t, h, w)):
+            raise TypeError(f"create needs integral T, H, W, not a bool, got "
+                             f"({t!r}, {h!r}, {w!r})")
         try:
             t, h, w = operator.index(t), operator.index(h), operator.index(w)
         except TypeError:
-            raise ValueError(f"create needs integral T, H, W, got "
-                             f"({t!r}, {h!r}, {w!r})")
+            raise TypeError(f"create needs integral T, H, W, got "
+                             f"({t!r}, {h!r}, {w!r})") from None
         if min(t, h, w) < 1:
             raise ValueError(f"create needs T, H, W >= 1, got ({t}, {h}, {w})")
         cam = object.__new__(cls)               # bypass the open-only __init__

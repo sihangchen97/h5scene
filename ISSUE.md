@@ -33,7 +33,7 @@ Four review passes plus an independent audit. Everything is fixed, dropped on pu
   - an atomic `set_rgb` replace (audit).
 - **False positives:** `Image.NEAREST` ×2 and "`filter_args` unused" (audit).
 
-## Open: review pass 5 (2026-11-13, at `67d7aba`)
+## Review pass 5 (2026-11-13, at `67d7aba`; fixed in `1b77006`)
 
 71. ✅ **`cam_fp` no longer stores the file size** — it is `(N, 3) = (T, H, W)` (the camera's own THW, re-read from the camera at open); a metadata edit no longer breaks open, the size check only produced false alarms. `docs/schema.md` + `h5scene/__init__.py` updated; test_camera_meta_edit_does_not_break_rig_open.
     - **Repro:** run `H5Cam.open(a, "r+").set_meta("split", "train")` after the build. `H5CamRig.open` then raises "no longer matches the fingerprint". The edit grows the HDF5 file, and the fingerprint includes the file size.
@@ -55,3 +55,20 @@ Four review passes plus an independent audit. Everything is fixed, dropped on pu
 75. ✅ **`create` rejects non-integral T/H/W** via `operator.index` (test_create_rejects_non_integral_thw). Any number ≥ 1 is accepted and then truncated by `int()`. Fix: require integral values (`operator.index`, or `int(x) == x`).
 76. ✅ **`open` requires `attrs.is_metric`** on both H5Cam and H5CamRig (test_open_requires_is_metric). (#62 said it could be required). A foreign file with only `THW` opens, and the `is_metric` property raises `KeyError` later. Fix: add `is_metric` to the "not an H5Cam/H5CamRig file" checks.
 77. ⏭️ **`_tobedelete/probe_t.h5` is still on disk**, although #69 says the directory was deleted. It is gitignored and is the local mv-not-rm holding area, so this is a wording mismatch only. Remove it by hand when convenient.
+
+## Open: review of the #71–#76 fixes (2026-11-13, at `1b77006`)
+
+78. ✅ **README.md updated for #71 (and #79).** L46 still says `cam_fp = int64 (N, 4) per-camera (T, H, W, size)`, and L81 says "content fingerprint (THW + size)".
+79. ✅ **`cam_fp` dropped**: open compares the camera THW with `(T, *cam_hw[n])`. Was: `cam_fp` is now fully redundant. Each row is `(TNHW[0], *cam_hw[n])`, and `_verify_sources` even asserts that equality. It is also not a "content" fingerprint (see CLAUDE.md L38, `__init__.py` L85 and `schema.md`). Pick one:
+    - drop `cam_fp` and compare the camera's THW with `(T, *cam_hw[n])` directly;
+    - or keep it and call it "the camera THW at build time", not a content fingerprint.
+80. ✅ **`H5Cam.create` type handling fixed.** Non-integral T/H/W now raises `TypeError` (`from None`); `bool` is rejected explicitly (it would have passed as 1 via `operator.index(True) == 1`).
+81. ✅ **Tests updated for #79.** The `cam_fp` assertion is gone (now asserts `cam_hw`), the foreign-rig fixture no longer sets `cam_fp`, and the stale "fingerprint (THW + size)" / "fingerprint is content-based" / "fingerprint detection" comments are reworded.
+    - **Fails:** `tests/test_issue_bugs.py` L287 asserts `h.attrs["cam_fp"].shape == (2, 3)` → `test_rig_survives_cp_and_moves_with_cameras` raises `KeyError`. Fix: assert `"cam_fp" not in h.attrs` and `cam_hw.shape == (2, 2)`.
+    - **Stale text:**
+      - L107: "fingerprint (THW + size)".
+      - L288: "fingerprint is content-based".
+      - L345: the foreign-rig fixture still sets `cam_fp`.
+      - L352: the #71 docstring says "fingerprint".
+      - CLAUDE.md L44: "fingerprint detection".
+      - `h5camrig.py` L59: the class docstring says "match the stored fingerprint".

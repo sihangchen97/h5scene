@@ -25,15 +25,15 @@ Wmax) — REFERENCES only, nothing copied into the rig file (verified
   (Hmax, Wmax).
 - attrs.cam_files (paths RELATIVE to the rig file's directory — VDS and
   ExternalLinks resolve that way, so a rig copied/moved together with its
-  cameras keeps working) + attrs.cam_hw (per-camera (H, W)) + attrs.cam_fp
-  (per-camera (T, H, W) — the camera's own THW, read back from the camera
-  at open): H5CamRig(open) verifies the camera files still exist, match
-  that THW, AND still hold every mapped section with the mapped shape
-  (a del_section / re-store on a camera leaves its own THW unchanged, so
-  only the section check catches it), because a missing/renamed/rewritten
+  cameras keeps working) + attrs.cam_hw (per-camera (H, W)): H5CamRig(open)
+  verifies the camera files still exist, their attrs.THW still equals
+  (T, *cam_hw[n]), AND they still hold every mapped section with the mapped
+  shape (a del_section / re-store on a camera leaves its own THW unchanged,
+  so only the section check catches it), because a missing/renamed/rewritten
   source makes VDS reads SILENTLY return the fillvalue (and ExternalLinks
-  raise KeyError) instead of erroring clearly. The fingerprint is the THW,
-  NOT the file size — a metadata edit on a camera no longer breaks open.
+  raise KeyError) instead of erroring clearly. Nothing about the file size
+  or mtime — a metadata edit on a camera does not break the rig (the VDS
+  is a live reference).
 - the result is also a plain H5Base file (attrs.TNHW, /img t_n keys, /meta).
 """
 import os
@@ -55,8 +55,9 @@ class H5CamRig(H5Base):
     has no seq: it IS the merge). Build: H5CamRig.build(out, cam_paths,
     suffix=...) — all cameras must share the SAME dataset and scene (checked);
     suffix is the rig's own variant marker (default empty). Open:
-    H5CamRig.open(path) verifies the camera files exist and match the stored
-    fingerprint. build/open are the only constructors (__init__ opens only).
+    H5CamRig.open(path) verifies the camera files exist, their attrs.THW is
+    still (T, *cam_hw[n]), and their mapped sections are intact.
+    build/open are the only constructors (__init__ opens only).
     All scene reads (rgb/depth/mask/K/pose/depth_conf/depth_mask + meta) are
     (T, N) methods
     on this class, built on the codecs/ decode helpers."""
@@ -69,8 +70,7 @@ class H5CamRig(H5Base):
     ATTR_KEYS = {"TNHW": np.ndarray,       # int64 (4,) = (T, N, Hmax, Wmax)
                  "is_metric": bool,
                  "cam_files": np.ndarray,  # str[] source cam files, relative to the rig
-                 "cam_hw": np.ndarray,     # int64 (N, 2) per-camera (H, W)
-                 "cam_fp": np.ndarray}     # int64 (N, 3) = (T, H, W) content fp
+                 "cam_hw": np.ndarray}     # int64 (N, 2) per-camera (H, W)
     META_KEYS = {k: v for k, v in H5Cam.META_KEYS.items()
                  if k not in ("seq", "src_frame_idxs")}   # the suffix is already there
 
@@ -96,10 +96,9 @@ class H5CamRig(H5Base):
         try:
             a = self._h
             if any(k not in a.attrs for k in
-                   ("TNHW", "cam_files", "cam_hw", "cam_fp", "is_metric")):
+                   ("TNHW", "cam_files", "cam_hw", "is_metric")):
                 raise ValueError(f"{self.path}: not an H5CamRig file "
-                                 "(no attrs.TNHW / cam_files / cam_hw / cam_fp / "
-                                 "is_metric)")
+                                 "(no attrs.TNHW / cam_files / cam_hw / is_metric)")
             self._verify_sources()
             self.T, self.N, self.H, self.W = (int(x) for x in a.attrs["TNHW"])
         except Exception:
@@ -135,13 +134,11 @@ class H5CamRig(H5Base):
             with h5py.File(p, "r") as c:
                 thw = c.attrs.get("THW")
                 cam = None if thw is None else tuple(int(x) for x in thw)
-                Tc, Hc, Wc = (int(x) for x in a["cam_fp"][i])
-                if (cam != (Tc, Hc, Wc)
-                        or (Tc, Hc, Wc) != (T, hw[i][0], hw[i][1])):
+                want = (T, hw[i][0], hw[i][1])     # the camera's THW at build time
+                if cam != want:
                     raise ValueError(
-                        f"{self.path}: camera {i} ({p}) no longer matches the "
-                        f"camera THW stored at build time (it changed) — the "
-                        f"VDS would misread")
+                        f"{self.path}: camera {i} ({p}) THW is now {cam} but was "
+                        f"{want} at build time — the VDS would misread")
                 for name in vds_secs:               # the mapped sections, per camera
                     if name not in c:
                         raise ValueError(
@@ -393,19 +390,16 @@ class H5CamRig(H5Base):
         h = rig._h
         # references are stored relative to the rig file's directory: VDS and
         # ExternalLinks resolve that way, so a rig copied/moved together with
-        # its cameras keeps working (the fingerprint is content-based, not
-        # mtime-based, so `cp`/`rsync`/git-checkout don't break it).
+        # its cameras keeps working (open checks the camera THW + the mapped
+        # sections, never the file size or mtime).
         d = osp.dirname(rig.path) or "."
         relp = [osp.relpath(p, d) for p in absp]
         rig.set_attr("TNHW", np.array((T, N, H, W), np.int64))
         rig.set_attr("is_metric", is_metric)
         rig.set_attr("cam_files", np.array(relp, dtype=_STR))
         rig.set_attr("cam_hw", np.array(dhw, np.int64))
-        # (T, H, W) per camera — the camera's own THW is the fingerprint (the
-        # file SIZE is deliberately NOT stored: a metadata edit on a camera
-        # grows the HDF5 file, but a VDS is a live reference, so that is fine)
-        fps = [(T, hh, ww) for (hh, ww) in dhw]
-        rig.set_attr("cam_fp", np.array(fps, np.int64))
+        # the camera THW at build time is (T, *cam_hw[n]); open re-reads
+        # attrs.THW and compares — no separate attr stored.
         # /img: nothing stored — each (t, n) is an ExternalLink to the
         # camera's own /img/{t} (variable-length jpg cannot be a VDS).
         # rgb(t, n) decodes at camera n's NATIVE (H, W).
