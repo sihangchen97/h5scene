@@ -43,8 +43,11 @@
 
 ## 2. 我们 h5scene 现状(基线)
 
-已固定:`attrs.TNHW`、`/rgb/{t}_{n}` jpg q≤95、`/depth` uint16 mm、`/mask`、`/K`、`/T`、`/depth_conf`、`/meta/is_metric`、`/meta/is_video`、`/scene_path`、`/meta_json`。
-`set_meta` 目前支持:`scene_path` / `meta_json` / `is_metric` / `is_video`。
+现状(2026-11-13 落地后):`attrs.TNHW` + `attrs.is_metric`(数据侧);`/rgb` jpg q≤95、
+`/depth` uint16 mm、`/mask`、`/K`、`/T`、`/depth_conf`;`/meta/{scene_path,source_dataset,
+scene_ids,split,meta_json}` + `/meta/frame_indices` + `/meta/tags/`(数据集侧)。
+`set_meta(scene_path, source_dataset, scene_ids, split, meta_json, frame_indices, tags, is_metric)`。
+`is_video` 已废弃(T>1 即视频序列,轴本身表达,见 D7 后的补充决定)。
 
 ## 3. 决策清单(逐个定,✅=定了 ⬜=待定)
 
@@ -109,7 +112,6 @@
   /T            f32 (T,N,4,4) raw                           (已有)
   /depth_conf   f16 (T,N,h,w) 0-1, gzip4, 与 depth 同 (h,w) (已有)
   # ---- /meta:数据集侧(来源/上下文)----
-  /meta/is_video                 bool            (已有,留在 /meta)
   /meta/scene_path               str             (平铺,可选)
   /meta/source_dataset           str             (平铺,可选)
   /meta/scene_ids                str             (平铺,可选;跨 pipeline 锚)
@@ -122,7 +124,8 @@
 ### 迁移规则(旧 sparse_h5 → 新格式)
 - `/rgb` PNG 字节 → 按 q≤95 策略重编码;旧 key(源帧号)→ 新 t_n 派生 key,源帧号进 `frame_indices`。
 - `/depth` 全分辨率 mm → 原样可存(也可下采样存小);`/K` `/T` 形状直接兼容(N=1)。
-- `/meta` 旧键中:`is_metric` 上移 attrs;`is_video`/`scene_path`/`split`/`tags` 收入新 /meta;
-  `images`/`max_interval`/`has_mask`/`has_pose`/`group_type`/`timestamps`/`has_metadata_source`/`nframes` **丢弃**;
+- `/meta` 旧键中:`is_metric` 上移 attrs;`scene_path`/`split`/`tags` 收入新 /meta;
+  `is_video` 与 `images`/`max_interval`/`has_mask`/`has_pose`/`group_type`/`timestamps`/
+  `has_metadata_source`/`nframes` 一并**丢弃**(T/N 轴已表达视频性);
   `spatialbench/meta_json` 原文 → /meta/meta_json,平铺 scene_path/source_dataset/scene_ids。
 - `/groups` `/group_scores` 空壳占位(查实为 arange(T) + 全 1.0)→ **丢弃**。
