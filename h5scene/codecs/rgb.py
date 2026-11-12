@@ -92,8 +92,11 @@ def jpeg_hw(data):
         m = int(b[i]) * 256 + int(b[i + 1])
         if m == 0xFFDA:                                 # SOS: no SOF seen
             return None
-        if m in (0xFFC0, 0xFFC1, 0xFFC2, 0xFFC3, 0xFFC4, 0xFFC5, 0xFFC6, 0xFFC7,
-                 0xFFC8, 0xFFC9, 0xFFCA, 0xFFCB, 0xFFCC, 0xFFCD, 0xFFCE, 0xFFCF):
+        # SOF0-SOF15 EXCEPT C4 (DHT), C8 (JPG) and CC (DAC) — those are
+        # other markers with a different layout, and some encoders put a DHT
+        # before the SOF; treating them as SOF would read a wrong size.
+        if m in (0xFFC0, 0xFFC1, 0xFFC2, 0xFFC3, 0xFFC5, 0xFFC6, 0xFFC7,
+                 0xFFC9, 0xFFCA, 0xFFCB, 0xFFCD, 0xFFCE, 0xFFCF):
             # SOF segment: len(2) precision(1) H(2) W(2) ncomp(1) — at i+4..i+9
             if i + 10 > len(b):                         # SOF present but truncated
                 return None
@@ -106,7 +109,7 @@ def jpeg_hw(data):
 
 
 # ---- input normalization (array / image bytes / file paths) ----
-def normalize_rgb(rgb, T, N):
+def normalize_rgb(rgb):
     """rgb -> (H, W, frames (T*N,) image bytes, all jpg q<=95).
     Input: a (T,N,H,W,3)/(H,W,3) uint8 RGB array (encoded to jpg q95), a
     per-frame image-bytes sequence, or file paths (flat list: T frames N=1;

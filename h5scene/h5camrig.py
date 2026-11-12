@@ -26,11 +26,12 @@ Wmax) — REFERENCES only, nothing copied into the rig file (verified
   ExternalLinks resolve that way, so a rig copied/moved together with its
   cameras keeps working) + attrs.cam_hw (per-camera (H, W)) + attrs.cam_fp
   (per-camera (T, H, W, size) CONTENT fingerprint — THW is read from the
-  camera at open; legacy (T, H, W, size, mtime_ns) rows still verified):
-  H5CamRig(open) verifies the camera files still exist AND match the
-  fingerprint, because a missing/renamed/rewritten source makes VDS reads
-  SILENTLY return the fillvalue (and ExternalLinks raise KeyError) instead
-  of erroring clearly.
+  camera at open): H5CamRig(open) verifies the camera files still exist,
+  match the fingerprint, AND still hold every mapped section with the
+  mapped shape (a del_section / re-store on a camera leaves the size and
+  THW unchanged, so only the section check catches it), because a
+  missing/renamed/rewritten source makes VDS reads SILENTLY return the
+  fillvalue (and ExternalLinks raise KeyError) instead of erroring clearly.
 - the result is also a plain H5Base file (attrs.TNHW, /img t_n keys, /meta).
 """
 import os
@@ -42,57 +43,60 @@ import numpy as np
 from .codecs import (FRAME_SHAPE, SECTIONS, conf_frame, depth_mask as _dm,
                      decode_rgb, has, is_metric as _is_metric,
                      jpeg_hw, mm_frame, meters_frame)
-from .h5base import H5Base, MetaSpec
+from .h5base import H5Base, _STR
 from .h5cam import H5Cam
 
-_STR = h5py.string_dtype(encoding="utf-8")
 
 
 class H5CamRig(H5Base):
     """N H5Cam files -> one multi-camera file (T, N, Hmax, Wmax) of
     references only — the cameras' seqs merged into one time axis (the rig
     has no seq: it IS the merge). Build: H5CamRig.build(out, cam_paths,
-    suffix=...) or H5CamRig(out, cam_paths, suffix=...) — all cameras must
-    share the SAME dataset and scene (checked); suffix is the rig's own
-    variant marker (default empty). Open: H5CamRig.open(path) — verifies the
-    camera files exist and match the stored fingerprint. All scene reads
-    (rgb/depth/mask/K/pose/depth_conf/depth_mask + meta) are (T, N) methods
+    suffix=...) — all cameras must share the SAME dataset and scene (checked);
+    suffix is the rig's own variant marker (default empty). Open:
+    H5CamRig.open(path) verifies the camera files exist and match the stored
+    fingerprint. build/open are the only constructors (__init__ opens only).
+    All scene reads (rgb/depth/mask/K/pose/depth_conf/depth_mask + meta) are
+    (T, N) methods
     on this class, built on the codecs/ decode helpers."""
 
     # (name -> expected type); the rig has NO "seq" and NO "src_frame_idxs" —
     # it IS the merged time axis (the cameras' per-source frame numbers have
     # no single meaning for the merged axis). META_KEYS is DERIVED from
     # H5Cam's (the source camera's registry): cam keys minus "seq" and
-    # "src_frame_idxs", plus the rig's own "suffix".
+    # "src_frame_idxs"; the "suffix" is H5Cam's own.
     ATTR_KEYS = {"TNHW": np.ndarray,       # int64 (4,) = (T, N, Hmax, Wmax)
                  "is_metric": bool,
                  "cam_files": np.ndarray,  # str[] source cam files, relative to the rig
                  "cam_hw": np.ndarray,     # int64 (N, 2) per-camera (H, W)
                  "cam_fp": np.ndarray}     # int64 (N, 4) = (T, H, W, size) content fp
-    META_KEYS = {**{k: v for k, v in H5Cam.META_KEYS.items()
-                    if k not in ("seq", "src_frame_idxs")},
-                 "suffix": MetaSpec(str)}  # this rig's own variant marker
+    META_KEYS = {k: v for k, v in H5Cam.META_KEYS.items()
+                 if k not in ("seq", "src_frame_idxs")}   # the suffix is already there
 
     @classmethod
     def build(cls, out_path, cam_paths, suffix=""):
-        return cls(out_path, cam_paths, suffix=suffix)
+        """Build a rig from the camera files (the ONLY construction path;
+        a failure leaves no half-made file and an existing output untouched)."""
+        rig = object.__new__(cls)            # bypass the open-only __init__
+        rig.path = str(out_path)
+        rig._created = False
+        rig._build(rig.path, cam_paths, suffix)
+        rig.T, rig.N, rig.H, rig.W = (int(x) for x in rig._h.attrs["TNHW"])
+        return rig
 
     @classmethod
     def open(cls, path, mode="r"):
         return cls(path, mode=mode)
 
-    def __init__(self, out_path, cam_paths=None, suffix="", mode=None):
-        if cam_paths is not None:            # build
-            self.path = str(out_path)
-            self._build(self.path, cam_paths, suffix)
-            self.T, self.N, self.H, self.W = (int(x) for x in self._h.attrs["TNHW"])
-            return
+    def __init__(self, out_path, mode="r"):
+        """Open an existing rig file ("r" or "r+"). Building goes through
+        H5CamRig.build — not this."""
         super().__init__(out_path, mode=mode)
         try:
             a = self._h
-            if "TNHW" not in a.attrs or "cam_files" not in a.attrs:
+            if any(k not in a.attrs for k in ("TNHW", "cam_files", "cam_hw", "cam_fp")):
                 raise ValueError(f"{self.path}: not an H5CamRig file "
-                                 "(no attrs.TNHW / cam_files)")
+                                 "(no attrs.TNHW / cam_files / cam_hw / cam_fp)")
             self._verify_sources()
             self.T, self.N, self.H, self.W = (int(x) for x in a.attrs["TNHW"])
         except Exception:
@@ -100,8 +104,7 @@ class H5CamRig(H5Base):
             raise
 
     # ---- source files (stored relative to the rig's dir; resolved the same
-    # way VDS / ExternalLinks do — a rig moved with its cameras keeps working;
-    # legacy absolute paths stay usable too) ----
+    # way VDS / ExternalLinks do — a rig moved with its cameras keeps working) ----
     def _cam_file_paths(self):
         d = osp.dirname(osp.abspath(self.path))
         return [osp.normpath(osp.join(d, str(p))) for p in self._h.attrs["cam_files"]]
@@ -115,29 +118,48 @@ class H5CamRig(H5Base):
                 f"{self.path}: missing camera source file(s) — VDS would "
                 f"silently read fillvalues and ExternalLinks raise: {missing}")
         T = int(a["TNHW"][0])                       # the rig's own T
-        hw = [(int(a["cam_hw"][i][0]), int(a["cam_hw"][i][1])) for i in range(len(files))]
+        N = int(a["TNHW"][1])
+        hw = [(int(a["cam_hw"][i][0]), int(a["cam_hw"][i][1]))
+              for i in range(N)]
+        # the sections the rig actually maps (a VDS dataset present in the rig,
+        # plus /img when it has image links) — each camera must still hold them
+        # with the mapped shape, because a del_section / re-store at a new (h, w)
+        # leaves the file size AND THW unchanged and the VDS would silently read
+        # the fillvalue.
+        has_img = self.has("img")
+        vds_secs = [n for n in SECTIONS if n in self._h]
         for i, p in enumerate(files):
             st = os.stat(p)
-            if "cam_fp" in a:
-                fp = a["cam_fp"][i]
-                if fp.shape[0] == 5:                # legacy (T, H, W, size, mtime_ns)
-                    Tc, Hc, Wc, size, mtime = (int(x) for x in fp)
-                    bad = ((st.st_size, st.st_mtime_ns) != (size, mtime)
-                           or (Tc, Hc, Wc) != (T, hw[i][0], hw[i][1]))
-                    why = "size/mtime"
-                else:                               # (T, H, W, size): the camera's own
-                    Tc, Hc, Wc, size = (int(x) for x in fp)   # THW is read and compared
-                    with h5py.File(p, "r") as c:
-                        thw = c.attrs.get("THW")
-                    cam = None if thw is None else tuple(int(x) for x in thw)
-                    bad = (size != st.st_size or cam != (Tc, Hc, Wc)
-                           or (Tc, Hc, Wc) != (T, hw[i][0], hw[i][1]))
-                    why = "THW or size"
-                if bad:
+            with h5py.File(p, "r") as c:
+                thw = c.attrs.get("THW")
+                cam = None if thw is None else tuple(int(x) for x in thw)
+                Tc, Hc, Wc, size = (int(x) for x in a["cam_fp"][i])
+                if (size != st.st_size or cam != (Tc, Hc, Wc)
+                        or (Tc, Hc, Wc) != (T, hw[i][0], hw[i][1])):
                     raise ValueError(
                         f"{self.path}: camera {i} ({p}) no longer matches the "
-                        f"fingerprint stored at build time ({why} changed) "
+                        f"fingerprint stored at build time (THW or size changed) "
                         f"— the VDS would misread")
+                for name in vds_secs:               # the mapped sections, per camera
+                    if name not in c:
+                        raise ValueError(
+                            f"{self.path}: camera {i} ({p}) no longer has /{name}, "
+                            f"which the rig maps — the VDS would read the fillvalue")
+                    # the camera stores (T, ...) in every mapped section: (T, H, W)
+                    # for the frame sections and (T, 3, 3) / (T, 4, 4) for K / T
+                    want = (T, *FRAME_SHAPE[name]) if name in FRAME_SHAPE \
+                        else (T, hw[i][0], hw[i][1])
+                    if c[name].shape != want:
+                        raise ValueError(
+                            f"{self.path}: camera {i} ({p}) /{name} is now "
+                            f"{c[name].shape} but the rig mapped {want} — the VDS "
+                            f"would misread")
+                if has_img:
+                    ig = c.get("img")
+                    if ig is None or any(f"{t}" not in ig for t in range(T)):
+                        raise ValueError(
+                            f"{self.path}: camera {i} ({p}) no longer has all the "
+                            f"/img frames the rig links to — the ExternalLink would raise")
 
     # ---- properties ----
     @property
@@ -275,7 +297,7 @@ class H5CamRig(H5Base):
         cams = []
         try:
             for p in absp:
-                cams.append(H5Cam(p))
+                cams.append(H5Cam.open(p))
             vals, meta = self._validate(cams)
         finally:
             for c in cams:
@@ -342,10 +364,14 @@ class H5CamRig(H5Base):
                                          f"upscale downsampled depth")
             if has_rgb[n]:                        # size check from the SOF header
                 for t in range(c.T):
-                    b = c._h["img"][f"{t}"][:].tobytes()
+                    ds = c._h["img"][f"{t}"]
+                    b = bytes(ds[:65536])        # covers a maximal APP1 before SOF
                     hw = jpeg_hw(b)
-                    if hw is None:
-                        hw = decode_rgb(b).shape[:2]
+                    if hw is None:                # no SOF in the prefix: the full read
+                        b = bytes(ds[:])
+                        hw = jpeg_hw(b)
+                        if hw is None:
+                            hw = decode_rgb(b).shape[:2]
                     if hw != (c.H, c.W):
                         raise ValueError(f"cam {n} img frame {t} size {hw} "
                                          f"!= declared ({c.H},{c.W})")
@@ -393,16 +419,13 @@ class H5CamRig(H5Base):
             shp = FRAME_SHAPE[name] if fixed else (H, W)
             lay = h5py.VirtualLayout(shape=(T, N, *shp), dtype=s.dtype)
             for n, (hh, ww) in enumerate(dhw):
-                if fixed:                       # (3,3)/(4,4): one block per camera
-                    lay[:, n, ...] = h5py.VirtualSource(
-                        relp[n], name, shape=(T, *FRAME_SHAPE[name]))
-                elif (hh, ww) == (H, W):       # full-size: one block
-                    lay[:, n, ...] = h5py.VirtualSource(relp[n], name, shape=(T, H, W))
-                else:                           # per-frame (h, w) blocks;
-                    # pad region -> fillvalue; the [t] selects camera frame t
-                    for t in range(T):
-                        lay[t, n, :hh, :ww] = h5py.VirtualSource(
-                            relp[n], name, shape=(T, hh, ww))[t]
+                # ONE mapping per camera: a full-size camera maps the whole block,
+                # a padded one the (hh, ww) part (pad -> fillvalue); the fixed
+                # K/T map the (3,3)/(4,4) block. One mapping reads back
+                # identically for all three cases — no per-frame blocks.
+                bh, bw = FRAME_SHAPE[name] if fixed else (hh, ww)
+                lay[:, n, :bh, :bw] = h5py.VirtualSource(
+                    relp[n], name, shape=(T, bh, bw))
             h.create_virtual_dataset(name, lay, fillvalue=s.fillvalue)
         # /meta: the base set_meta (validated before any write; empty values
         # skipped as before)

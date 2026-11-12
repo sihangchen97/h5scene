@@ -52,8 +52,8 @@ axis onto it — written "[N]" where the rig adds one axis):
                        them the same way — a rig moved with its cameras works),
                        cam_hw = int64 (N, 2) per-camera (H, W),
                        cam_fp = int64 (N, 4) per-camera (T, H, W, size)
-                       content fingerprint (verified at open; legacy (N,5)
-                       rows with mtime_ns are still accepted)
+                       content fingerprint (verified at open, together with
+                       the mapped sections' presence + shapes)
 
 H5Cam usage:
 

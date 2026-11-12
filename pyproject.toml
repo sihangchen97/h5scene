@@ -33,8 +33,12 @@ default = { solve-group = "default" }
 test = { features = ["test"], solve-group = "default" }
 imgtest = { features = ["imgtest"], solve-group = "default" }
 
-[tool.pixi.tasks]
+# a FEATURE task: 'pixi run test' resolves to the test env (which has pytest);
+# a workspace task would run it in the default env, which has no pytest.
+[tool.pixi.feature.test.tasks]
 test = "python -m pytest tests/ -q"
+
+[tool.pixi.tasks]
 smoke-img = "pixi run -e imgtest python tests/smoke_image_formats.py"
 
 [tool.pixi.dependencies]

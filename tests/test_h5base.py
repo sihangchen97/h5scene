@@ -36,7 +36,7 @@ def test_write_section(tmp_path):
 
 def test_subclass_registries_are_checked(tmp_path):
     p = str(tmp_path / "cam.h5")
-    with H5Cam(p, 2, 4, 4) as cam:
+    with H5Cam.create(p, 2, 4, 4) as cam:
         cam.set_attr("THW", np.array([2, 4, 4], np.int64))
         cam.set_attr("is_metric", True)
         H5Base.set_meta(cam, "scene", "s")            # the base single-key accessor
@@ -72,11 +72,11 @@ def test_rig_registries_have_no_seq(tmp_path):
     cams = []
     for i in (0, 1):
         cp = str(tmp_path / f"c{i}.h5")
-        with H5Cam(cp, 2, 8, 8) as c:
+        with H5Cam.create(cp, 2, 8, 8) as c:
             c.set_rgb([cv2.imencode(".jpg", np.full((8, 8, 3), i + 1, np.uint8))[1].tobytes()] * 2)
             c.set_meta(dataset="d", scene="s")
         cams.append(cp)
-    with H5CamRig(p, cams, suffix="v") as rig:
+    with H5CamRig.build(p, cams, suffix="v") as rig:
         assert "seq" not in H5CamRig.META_KEYS
         assert "seq" not in H5CamRig.ATTR_KEYS
         assert rig.dataset == "d" and rig.scene == "s" and rig.suffix == "v"
@@ -95,7 +95,7 @@ def test_meta_registry_is_all_metasp(tmp_path):
     # a non-str tags value / key is rejected by the spec, not a legacy branch
     class C(H5Cam):
         pass
-    with H5Cam(str(tmp_path / "c.h5"), 2, 4, 4) as cam:
+    with H5Cam.create(str(tmp_path / "c.h5"), 2, 4, 4) as cam:
         with pytest.raises(TypeError, match="must be a str"):
             cam.set_meta(tags={"a": 5})
         cam.set_meta(tags={"a": "x"})

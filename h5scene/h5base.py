@@ -12,7 +12,7 @@ types are accepted: np.bool_ for bool, np.integer for int, …); array keys
 carry a MetaSpec(type, dtype=int64, length="T") that also checks dtype and
 axis-0 length. (H5Cam and H5CamRig each define what their file actually
 holds — e.g. the rig has no "seq"; its registry is DERIVED from H5Cam's:
-cam keys minus "seq".)
+cam keys minus "seq" and "src_frame_idxs").
 
 Nothing scene-specific — no shape: the axis convention (T,H,W vs
 T,N,Hmax,Wmax) and the section semantics live on the subclasses, which build
@@ -113,6 +113,9 @@ class H5Base:
         else:
             if mode is None:
                 mode = "r"
+            if mode not in ("r", "r+"):
+                raise ValueError(f"open mode must be 'r' or 'r+', got {mode!r} — "
+                                 f"'w' would truncate the file (use create to build one)")
             if not osp.exists(self.path):
                 raise FileNotFoundError(f"no such file: {self.path}")
             self._h = h5py.File(self.path, mode)
@@ -223,12 +226,12 @@ class H5Base:
 
     # ---- type checking (shared) ----
     def _check_attr_value(self, name, value):
+        # invariant: ATTR_KEYS values are always types (isinstance-checked)
         t = self.ATTR_KEYS[name]
-        if isinstance(t, type):
-            ok = _NUM_EQUIV.get(t, (t,))
-            if not isinstance(value, ok):
-                raise TypeError(f"attr {name!r} expects {t.__name__}, "
-                                f"got {type(value).__name__}")
+        ok = _NUM_EQUIV.get(t, (t,))
+        if not isinstance(value, ok):
+            raise TypeError(f"attr {name!r} expects {t.__name__}, "
+                            f"got {type(value).__name__}")
 
 
     @staticmethod

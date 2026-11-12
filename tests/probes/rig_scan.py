@@ -15,7 +15,7 @@ import h5py
 import numpy as np
 
 ROOT = "/vol/juneleung-solar/lizard/vggt_research/dataset"
-SKIP = ("_raw", "_tobedelete", "_preprocess", "_scripts", "_tests", ".bak",
+SKIP = ("_raw", "_preprocess", "_scripts", "_tests", ".bak",
         "pre_t", "pre_e")
 
 
@@ -26,47 +26,19 @@ def is_bad(path):
 def probe(path):
     out = {"path": path.rsplit(os.sep + "dataset" + os.sep, 1)[-1]}
     with h5py.File(path, "r") as h:
-        # resolution: our format (attrs.TNHW) or legacy (attrs.H/W + /meta/images)
-        if "TNHW" in h.attrs:
-            T, N, H, W = (int(x) for x in h.attrs["TNHW"])
-            out.update(T=T, N=N, legacy=False)
-        else:
-            H, W = (int(h.attrs["H"]), int(h.attrs["W"]))
-            nframes = int(h.attrs.get("nframes", 0))
-            imgs = [x.decode() if isinstance(x, (bytes,)) else str(x)
-                    for x in h["meta"]["images"][:64]]
-            out["H"], out["W"], out["nframes"] = H, W, nframes
-            # N from the 't_n' suffix count distinct on the last _digit
-            suffixes = {i.rsplit("_", 1)[-1] for i in imgs if "_" in i}
-            N = max(len(suffixes), 1)
-            # bound the probe to the first min(N, 8) cameras' first frame
-            probed = []
-            for i in imgs:
-                t, n = i.rsplit("_", 1)
-                n = int(n)
-                if t == "0" and n not in {p[0] for p in probed} and len(probed) < 8:
-                    probed.append((0, n))
-            out["N"], out["legacy"] = N, True
-            if N > 1 and len(probed) == 1:
-                out["N_probe_caveat"] = f"only {len(probed)} distinct cam decoded"
+        # our format: attrs.TNHW — a non-rig file (no TNHW) is an error row,
+        # there is no legacy layout left to scan
+        T, N, H, W = (int(x) for x in h.attrs["TNHW"])
+        out.update(T=T, N=N)
         # per-camera decoded size
         sizes, ks = [], []
-        if "legacy" in out and out["legacy"]:
-            for (t, n) in probed:
-                b = h["img"][f"{t}_{n}" if not "_" in f"{t}_{n}" else f"{t}_{n}"][:]
-                img = cv2.imdecode(np.frombuffer(b, np.uint8), cv2.IMREAD_COLOR)
-                sizes.append(img.shape[:2] if img is not None else None)
-            if "K" in h:
-                for (t, n) in probed:
-                    ks.append(h["K"][t, n][:].copy())
-        else:
+        for n in range(N):
+            img = cv2.imdecode(np.frombuffer(h["img"][f"0_{n}"][:], np.uint8),
+                               cv2.IMREAD_COLOR)
+            sizes.append(img.shape[:2] if img is not None else None)
+        if "K" in h:
             for n in range(N):
-                img = cv2.imdecode(np.frombuffer(h["img"][f"0_{n}"][:], np.uint8),
-                                   cv2.IMREAD_COLOR)
-                sizes.append(img.shape[:2] if img is not None else None)
-            if "K" in h:
-                for n in range(N):
-                    ks.append(h["K"][0, n][:].copy())
+                ks.append(h["K"][0, n][:].copy())
         out["cam_sizes"] = sizes
         out["hw_uniform"] = len(set(sizes)) <= 1
         if ks:
@@ -96,10 +68,9 @@ def main(limit=None):
             print(f"  …{i}/{len(files)}", flush=True)
     # summary
     ncnt = Counter(r.get("N") for r in rows)
-    legacy = sum(1 for r in rows if r.get("legacy"))
     multi = [r for r in rows if r.get("N", 1) > 1]
     print("\n=== SUMMARY ===")
-    print(f"files: {len(rows)}  (legacy {legacy}, new {len(rows) - legacy}, errors {errs})")
+    print(f"files: {len(rows)}  (errors {errs})")
     print(f"N distribution: {dict(sorted(ncnt.items()))}")
     if multi:
         print(f"\nN>1 files ({len(multi)}):")

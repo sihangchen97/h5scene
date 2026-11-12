@@ -13,7 +13,7 @@ MM_MAX = 65535
 
 
 # ---- input -> stored (T, h, w) ----
-def to_mm(mm, T):
+def to_mm(mm,):
     """(T, h, w) INTEGER mm -> (T, h, w) uint16 mm (unit guard: an integer
     dtype only — a float means meters and must go through to_meters_mm)."""
     a = np.asarray(mm)
@@ -26,7 +26,7 @@ def to_mm(mm, T):
     return np.clip(v, 0, MM_MAX).astype(np.uint16)
 
 
-def to_meters_mm(meters, T):
+def to_meters_mm(meters,):
     """(T, h, w) float METERS -> (T, h, w) uint16 mm (unit guard: a float
     dtype only — an integer means mm and must go through to_mm).
     d >= 65.535 m -> 0 (invalid): 65535 is the invalid sentinel, so the max
@@ -42,13 +42,13 @@ def to_meters_mm(meters, T):
     return np.clip(v, 0, MM_MAX).astype(np.uint16)
 
 
-def to_conf(conf, T):
+def to_conf(conf,):
     """(T, h, w) float 0-1 -> (T, h, w) f16 0-1 (range guard: a float dtype
     only — an integer is never a 0-1 confidence and is rejected)."""
     a = np.asarray(conf)
     if a.dtype.kind != "f":
         raise TypeError(f"set_depth_conf_01 wants float 0-1, got {a.dtype.name} "
-                        f"integers are not accepted")
+                        f"— integers are not accepted")
     if a.size and (a.min() < 0.0 or a.max() > 1.0):
         raise ValueError(f"depth_conf must be 0-1, got "
                          f"[{a.min():.6g}, {a.max():.6g}]")

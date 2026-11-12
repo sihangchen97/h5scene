@@ -9,7 +9,7 @@
                the derived depth_mask.
 - pose.py    — K (3,3) / T (4,4) broadcast.
 - sections.py— the declarative SECTIONS table (dtype / compression / shuffle /
-               fillvalue / frame2d / resizable) + has() + is_metric; it drives
+               fillvalue / frame2d) + has() + is_metric; it drives
                the H5Cam writers, the rig's VDS build, and the tests.
 """
 from .rgb import (JPG_QUALITY, decode_rgb, encode_rgb, jpeg_dqt_tables,

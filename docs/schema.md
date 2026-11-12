@@ -63,7 +63,7 @@
                     同按该目录解析 → rig 与相机一起拷贝/移动后仍可打开)  必有(N 个)
   cam_hw     int64 (N, 2) 每相机原生 (H, W)     必有
   cam_fp     int64 (N, 4) = (T, H, W, size)  内容指纹;open 时读相机的 THW
-                    真比 + size 比;旧文件 (N,5) 带 mtime_ns 的行仍按旧逻辑校验  必有
+                    真比 + size 比,且校验每个被映射 section 的存在与形状  必有
   # ---- sections(全部零字节;img 走链接,其余走 VDS)----
   /img/{t}_{n}   ExternalLink → 相机 n 的 /img/{t}(jpg 变长不能 VDS);
                  rgb(t, n) 按相机 n 原生 (H, W) 解码

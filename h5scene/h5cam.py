@@ -34,42 +34,41 @@ class H5Cam(H5Base):
                  "src_frame_idxs": MetaSpec(np.ndarray, dtype=np.int64, length="T"),
                  "tags": MetaSpec(dict)}          # /meta/tags/* utf-8 (str keys and values)
 
-    def __init__(self, path, t=None, h=None, w=None, is_metric=False, mode=None):
-        if t is not None:
-            if isinstance(t, str):                 # H5Cam(p, "r+") — a mode in t's slot
-                raise TypeError(f"t (frame count) got a str {t!r}; to open an "
-                                f"existing file use H5Cam.open({path!r}, {t!r})")
-            if any(x is None for x in (h, w)) or any(v < 1 for v in (t, h, w)):
-                raise ValueError("create mode needs T, H, W >= 1")
-            super().__init__(path, create=True)
-            try:
-                self.T, self.H, self.W = int(t), int(h), int(w)
-                self.set_attr("THW", np.array((self.T, self.H, self.W), np.int64))
-                self.set_attr("is_metric", bool(is_metric))
-                self._h.create_group("img")
-            except Exception:
-                self._abort_create()
-                raise
-        else:
-            super().__init__(path, mode=mode)
-            try:
-                thw = self.attr("THW")
-                if thw is None:
-                    raise ValueError(f"{self.path}: not an H5Cam file (no attrs.THW)")
-                self.T, self.H, self.W = (int(x) for x in thw)
-                rg = self._h.get("img")
-                if rg is not None and len(rg) and (
-                        len(rg) != self.T or any(f"{t}" not in rg for t in range(self.T))):
-                    raise ValueError("img keys != 0..T-1")
-                self._check_sections()
-            except Exception:                   # corrupt file, bad THW, ...
-                self.close()
-                raise
+    def __init__(self, path, mode="r"):
+        """Open an existing H5Cam file ("r" or "r+"). Construction goes
+        through H5Cam.create — not this."""
+        super().__init__(path, mode=mode)
+        try:
+            thw = self.attr("THW")
+            if thw is None:
+                raise ValueError(f"{self.path}: not an H5Cam file (no attrs.THW)")
+            self.T, self.H, self.W = (int(x) for x in thw)
+            rg = self._h.get("img")
+            if rg is not None and len(rg) and (
+                    len(rg) != self.T or any(f"{t}" not in rg for t in range(self.T))):
+                raise ValueError("img keys != 0..T-1")
+            self._check_sections()
+        except Exception:                       # corrupt file, bad THW, ...
+            self.close()
+            raise
 
     @classmethod
     def create(cls, path, t, h, w, is_metric=False):
         """Create a new file (overwriting); T, H, W >= 1."""
-        return cls(path, t, h, w, is_metric=is_metric)
+        if any(x is None for x in (t, h, w)) or any(v < 1 for v in (t, h, w)):
+            raise ValueError("create needs T, H, W >= 1")
+        cam = object.__new__(cls)               # bypass the open-only __init__
+        H5Base.__init__(cam, path, create=True)
+        try:
+            cam.T, cam.H, cam.W = int(t), int(h), int(w)
+            cam.set_attr("THW", np.array((cam.T, cam.H, cam.W), np.int64))
+            cam.set_attr("is_metric", bool(is_metric))
+            cam._h.create_group("img")
+            cam._created = True
+        except Exception:
+            cam._abort_create()
+            raise
+        return cam
 
     @classmethod
     def open(cls, path, mode="r"):
@@ -166,7 +165,7 @@ class H5Cam(H5Base):
         a = np.asarray(rgb)
         if a.dtype == np.uint8 and a.ndim == 4:           # (T, H, W, 3) -> (T, 1, H, W, 3)
             rgb = a[:, None]
-        h, w, frames = normalize_rgb(rgb, self.T, 1)
+        h, w, frames = normalize_rgb(rgb)
         if len(frames) != self.T:
             raise ValueError(f"rgb gives {len(frames)} frames but T={self.T}")
         if (h, w) != (self.H, self.W):
@@ -200,31 +199,30 @@ class H5Cam(H5Base):
             raise ValueError(f"set_bgr must be a (T,H,W,3) or (H,W,3) uint8 BGR "
                              f"array, got {a.shape}")
 
+    def _set_depth(self, depth, to_mm):
+        d = self._cam(depth)
+        d = to_mm(d)
+        h, w = d.shape[1], d.shape[2]
+        self._check_depth_hw("depth", h, w)
+        self.write_section("depth", d, chunks=(1, h, w), **filter_args("depth"))
+
     def set_depth_mm(self, depth_mm):
         """(T, H, W) INTEGER mm / an (H, W) frame (T=1); MM ONLY (a float
         means meters — use set_depth_meters). May be stored smaller (T, h, w)
         if the aspect ratio H/W matches. gzip4 + shuffle (codecs.sections)."""
-        d = self._cam(depth_mm)
-        d = to_mm(d, self.T)
-        h, w = d.shape[1], d.shape[2]
-        self._check_depth_hw("depth", h, w)
-        self.write_section("depth", d, chunks=(1, h, w), **filter_args("depth"))
+        self._set_depth(depth_mm, to_mm)
 
     def set_depth_meters(self, depth_m):
         """(T, H, W) float METERS / an (H, W) frame (T=1); METERS ONLY (an
         integer means mm — use set_depth_mm). d >= 65.535 m -> 0 (the invalid
         sentinel). Same (h, w) rules as set_depth_mm."""
-        d = self._cam(depth_m)
-        d = to_meters_mm(d, self.T)
-        h, w = d.shape[1], d.shape[2]
-        self._check_depth_hw("depth", h, w)
-        self.write_section("depth", d, chunks=(1, h, w), **filter_args("depth"))
+        self._set_depth(depth_m, to_meters_mm)
 
     def set_depth_conf_01(self, conf):
         """(T, H, W) float 0-1 / an (H, W) frame (T=1); 0-1 FLOATS ONLY
         (integers are rejected — they are never a 0-1 confidence). Same (h, w)
         as depth; f16 0-1, gzip4 (no shuffle: most values 1.0)."""
-        c = to_conf(self._cam(conf), self.T)
+        c = to_conf(self._cam(conf))
         self._check_depth_hw("depth_conf", c.shape[1], c.shape[2])
         self.write_section("depth_conf", c, chunks=(1, c.shape[1], c.shape[2]),
                           **filter_args("depth_conf"))
@@ -331,12 +329,13 @@ class H5Cam(H5Base):
                 return self
             del h["img"]
         else:
-            if name == "depth" and "depth_conf" in h:
-                s, s2 = h["depth"].shape, h["depth_conf"].shape
-                if s[1:] == s2[1:]:
-                    raise ValueError("delete 'depth_conf' first (it must share "
-                                     "depth's (h, w); del_section('depth_conf') "
-                                     "then del_section('depth'))")
+            # depth_conf must go first: it must share depth's (h, w), which
+            # _check_depth_hw enforces, so the (h, w) comparison is always true
+            # and only the presence of both is what matters.
+            if name == "depth" and "depth" in h and "depth_conf" in h:
+                raise ValueError("delete 'depth_conf' first (it must share "
+                                 "depth's (h, w); del_section('depth_conf') "
+                                 "then del_section('depth'))")
             if name not in h:
                 return self
             del h[name]

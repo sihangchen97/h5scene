@@ -23,7 +23,7 @@ def _full_scene(tmp_path):
     """Scene with every section populated, 2x2 frames of HxW."""
     rng = np.random.default_rng(0)
     out = str(tmp_path / "policy.h5")
-    s = H5Cam(out, 2, H, W)
+    s = H5Cam.create(out, 2, H, W)
     s.set_rgb(rng.integers(0, 256, (2, H, W, 3)).astype(np.uint8))
     s.set_depth_mm(rng.integers(100, 3000, (2, H, W)).astype(np.uint16))
     m = np.ones((2, H, W), bool)
@@ -99,7 +99,7 @@ def test_depth_size_beats_raw_and_png_budget(tmp_path):
     d = np.load(DEPTH_PROBE)
     H_, W_ = d.shape
     out = str(tmp_path / "depth_only.h5")
-    s = H5Cam(out, 1, H_, W_)
+    s = H5Cam.create(out, 1, H_, W_)
     s.set_depth_mm(d)
     s.close()
     size = Path(out).stat().st_size
@@ -116,7 +116,7 @@ def test_rgb_stored_jpg95_smaller_than_png_and_lossy(tmp_path):
     img = cv2.imdecode(np.frombuffer(RGB_PROBE.read_bytes(), np.uint8), cv2.IMREAD_COLOR)
     h_, w_ = img.shape[:2]
     out = str(tmp_path / "rgb_only.h5")
-    s = H5Cam(out, 1, h_, w_)
+    s = H5Cam.create(out, 1, h_, w_)
     s.set_rgb([img])
     s.close()
     stored = h5py.File(out, "r")["img"]["0"][:]   # raw stored bytes
