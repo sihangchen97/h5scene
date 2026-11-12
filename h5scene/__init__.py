@@ -17,10 +17,13 @@ N = camera axis. Sections:
       derived: s.depth_mask(t, n, conf_min=…) — (H,W) bool, not stored:
                  depth not an invalid sentinel (0 AND 65535 excluded) and,
                  if depth_conf present, conf > (0 if conf_min is None, else conf_min)
-      /scene_path   utf-8 string                                       [optional]
-      /meta_json    utf-8 string (original meta.json verbatim)         [optional]
-      /meta/is_metric bool      /meta/is_video bool
-      attrs: TNHW = (T, N, H, W) int64 array
+      /meta/{scene_path,source_dataset,scene_ids,split,meta_json}
+              utf-8 strings (dataset-side context; meta_json = source verbatim)
+      /meta/frame_indices  int64 (T,) source frame numbers; only when
+              != arange(T) (dense: t already is the source frame)       [optional]
+      /meta/tags/*         utf-8 strings (data_type/dynamics/…)        [optional]
+      attrs: TNHW = (T, N, H, W) int64 array, is_metric bool (data-side;
+              legacy files still read /meta/is_metric)
 
 rgb input: a (T,N,H,W,3) or (H,W,3) uint8 array, a per-frame image-BYTES
 sequence, or file paths (flat: T frames N=1; (T,N): N cameras per frame).
@@ -56,7 +59,8 @@ H5Scene is a direct file handle (no in-memory data):
     s.shape, s.keys, s.has(name)
     s.rgb_bytes(t, n)  /  s.rgb(t, n)          # stored bytes / decoded (H,W,3)
     s.depth(t, n, meters=…) / s.K(t, n) / s.pose(t, n) / s.mask(t, n) / s.depth_conf(t, n)
-    s.scene_path, s.meta_json, s.is_metric, s.is_video
+    s.scene_path, s.source_dataset, s.scene_ids, s.split, s.meta_json, s.is_metric
+    s.frame_indices, s.tags
 """
 from .scene import H5Scene
 

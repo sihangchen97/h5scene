@@ -20,8 +20,10 @@ class H5Scene:
     into the file (shape validated against the pinned TNHW), every read comes
     straight out of the file.
 
-    H5Scene(path, T, N, H, W) creates/overwrites; H5Scene(path) opens."""
-    def __init__(self, path, t=None, n=None, h=None, w=None, is_metric=True, is_video=True):
+    H5Scene(path, T, N, H, W) creates/overwrites; H5Scene(path) opens.
+    is_metric (attrs) defaults True; the temporal-vs-multi-view distinction is
+    the T/N axes themselves (T>1 video sequence), so there is no is_video key."""
+    def __init__(self, path, t=None, n=None, h=None, w=None, is_metric=True):
         if t is not None:
             if any(x is None for x in (n, h, w)):
                 raise ValueError("create mode needs T, N, H, W")
@@ -31,7 +33,7 @@ class H5Scene:
             self.T, self.N, self.H, self.W = (int(t), int(n), int(h), int(w))
             self._h.attrs["TNHW"] = np.array(self.shape, dtype=np.int64)
             self._h.create_group("rgb")
-            self.set_meta(is_metric=is_metric, is_video=is_video)
+            self.set_meta(is_metric=is_metric)
         else:
             self.path = str(path)
             # 'r' (not 'a'): a missing path raises FileNotFoundError instead of
@@ -50,11 +52,11 @@ class H5Scene:
     # ---- metadata (straight from the file) ----
     @property
     def is_metric(self):
-        return bool(self._h["meta"]["is_metric"][()])
-
-    @property
-    def is_video(self):
-        return bool(self._h["meta"]["is_video"][()])
+        """bool. Stored in attrs (data-side); legacy files read /meta/is_metric."""
+        a = self._h
+        if "is_metric" in a.attrs:
+            return bool(a.attrs["is_metric"])
+        return bool(a["meta"]["is_metric"][()])
 
     # ---- lifecycle ----
     def __enter__(self):
@@ -163,43 +165,106 @@ class H5Scene:
         self._write("depth_conf", c, chunks=(1, 1, c.shape[2], c.shape[3]),
                     compression="gzip", compression_opts=4)
 
-    def set_meta(self, scene_path=None, meta_json=None, is_metric=None, is_video=None):
-        """scene_path/meta_json: str or None (None = remove the section, unless
-        it was already absent); is_metric/is_video: bool (default True on create)."""
+    def set_meta(self, scene_path=None, source_dataset=None, scene_ids=None, split=None,
+                 meta_json=None, frame_indices=None, tags=None, is_metric=None):
+        """Write the dataset-side /meta keys and the data-side attrs.is_metric
+        (see docs/meta_key_decisions.md, 2026-11-13).
+
+        str keys (scene_path/source_dataset/scene_ids/split/meta_json):
+        value = upsert, None = remove if present.
+        is_metric (bool) -> attrs (data-side, depth/scale semantics).
+        frame_indices: (T,) frame numbers in the source; stored only when
+        NOT equal to arange(T) (dense sequences: t already is the source
+        frame), None = leave as-is.
+        tags: dict[str, str] merged into /meta/tags/ (existing keys replaced),
+        None = leave as-is."""
         h = self._h
         m = h.require_group("meta")
-        for name, val in (("is_metric", is_metric), ("is_video", is_video)):
-            if val is None:
-                if name in m:
-                    val = bool(m[name][()])
-                else:
-                    continue
+        if is_metric is not None:
+            if "is_metric" in m:
+                del m["is_metric"]      # legacy location; reads still fall back
+            h.attrs["is_metric"] = bool(is_metric)
+        for name, val in (("scene_path", scene_path), ("source_dataset", source_dataset),
+                          ("scene_ids", scene_ids), ("split", split), ("meta_json", meta_json)):
             if name in m:
                 del m[name]
-            m.create_dataset(name, data=np.bool_(val))
-        for name, val in (("scene_path", scene_path), ("meta_json", meta_json)):
-            if val is None:
-                if name in h:
-                    del h[name]
-                continue
-            self._write(name, np.array(str(val), dtype=_STR))
+            if val is not None:
+                m.create_dataset(name, data=np.array(str(val), dtype=_STR))
+        if frame_indices is not None:
+            fi = np.asarray(frame_indices)
+            if fi.ndim != 1 or fi.shape[0] != self.T:
+                raise ValueError(f"frame_indices must be (T,) = ({self.T},), got {fi.shape}")
+            if "frame_indices" in m:
+                del m["frame_indices"]
+            if not (fi == np.arange(self.T)).all():
+                m.create_dataset("frame_indices", data=fi.astype(np.int64))
+        if tags is not None:
+            tg = m.require_group("tags")
+            for k, v in tags.items():
+                if k in tg:
+                    del tg[k]
+                tg.create_dataset(k, data=np.array(str(v), dtype=_STR))
         return self
 
     # ---- section presence ----
     def has(self, name):
         h = self._h
+        m = h["meta"]
         return {"rgb": len(h["rgb"]) > 0, "depth": "depth" in h, "mask": "mask" in h,
                 "K": "K" in h, "T": "T" in h, "depth_conf": "depth_conf" in h,
-                "scene_path": "scene_path" in h, "meta_json": "meta_json" in h}[name]
+                "is_metric": "is_metric" in h.attrs or "is_metric" in m,
+                "scene_path": "scene_path" in m or "scene_path" in h,
+                "source_dataset": "source_dataset" in m,
+                "scene_ids": "scene_ids" in m,
+                "split": "split" in m,
+                "meta_json": "meta_json" in m or "meta_json" in h,
+                "frame_indices": "frame_indices" in m,
+                "tags": "tags" in m}[name]
 
     # ---- metadata (straight from the file) ----
+    def _meta_str(self, name):
+        """/meta/<name> as str, or None; legacy root-level <name> (old layout)."""
+        h = self._h
+        if name in h["meta"]:
+            return h["meta"][name][()].decode()
+        if name in h and isinstance(h[name], h5py.Dataset):
+            return h[name][()].decode()
+        return None
+
     @property
     def scene_path(self):
-        return self._h["scene_path"][()].decode() if self.has("scene_path") else None
+        return self._meta_str("scene_path")
+
+    @property
+    def source_dataset(self):
+        return self._meta_str("source_dataset")
+
+    @property
+    def scene_ids(self):
+        return self._meta_str("scene_ids")
+
+    @property
+    def split(self):
+        return self._meta_str("split")
 
     @property
     def meta_json(self):
-        return self._h["meta_json"][()].decode() if self.has("meta_json") else None
+        return self._meta_str("meta_json")
+
+    @property
+    def frame_indices(self):
+        """(T,) int64 source frame numbers, or None (dense: t is the source frame)."""
+        m = self._h["meta"]
+        return m["frame_indices"][:] if "frame_indices" in m else None
+
+    @property
+    def tags(self):
+        """dict[str, str] from /meta/tags/, or None when absent."""
+        m = self._h["meta"]
+        if "tags" not in m:
+            return None
+        tg = m["tags"]
+        return {k: tg[k][()].decode() for k in tg}
 
     # ---- data (frame (t, n)) ----
     def _t(self, t, n):
