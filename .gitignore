@@ -1,4 +1,6 @@
 __pycache__/
+*.h5
+!tests/probes/**/*.h5
 *.egg-info/
 /build/
 /dist/

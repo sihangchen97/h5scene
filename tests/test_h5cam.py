@@ -1,16 +1,14 @@
+from pathlib import Path
 """Tests for H5Cam (single-camera, (T, H, W)) — round trips, the per-section
 storage policy (stored depth at (h,w), jpg q<=95 rgb), and the meta keys."""
-import sys
-from pathlib import Path
 
 import cv2
 import numpy as np
 import pytest
 import h5py
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # h5scene/ (package root)
 from h5scene import H5Cam  # noqa: E402
-from h5scene.convert import _to_depth_conf, _to_depth_mm, _to_mask  # noqa: E402
+# (no internal imports: tests go through the public API)
 
 
 def test_round_trip(tmp_path):

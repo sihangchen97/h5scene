@@ -50,37 +50,48 @@ their own frame: `h['depth'][t]` vs `h['depth'][t, n]`).
 from h5scene import H5Base, H5Cam, H5CamRig
 
 # single-camera sequence
-cam = H5Cam("cam.h5", T, H, W)
-cam.set_rgb(rgb)                    # (T,H,W,3) uint8 / (T,) image-bytes / paths
-cam.set_depth(depth_m)              # float meters or uint16 mm (>65.535 m -> 0);
+cam = H5Cam("cam.h5", T, H, W)     # create (overwrites); is_metric defaults False
+cam.set_rgb(rgb)                    # (T,H,W,3) uint8 / (H,W,3) (T=1) / (T,) image-bytes / paths
+cam.set_depth(depth_m)              # float METERS (or integer MM; >65.535 m -> 0);
                                     # may be stored at (h,w) < (H,W) if the aspect ratio matches
 cam.set_depth_conf(conf)            # same (h,w) as depth
 cam.set_mask(mask); cam.set_K(K); cam.set_pose(pose)
-cam.set_meta(dataset=…, scene=…, seq=…, suffix=…, tags={…})
+cam.set_meta(dataset=…, scene=…, seq=…, suffix=…, tags={…})   # multi-key (set the keys given)
 cam.close()
-with H5Cam("cam.h5") as cam:
+with H5Cam.open("cam.h5") as cam:   # open: read-only by default (mode="r" or "r+")
     cam.shape; cam.shape == (T, H, W)
-    cam.rgb(0)                      # (H, W, 3) uint8
+    cam.rgb(0)                      # (H, W, 3) uint8 RGB
     cam.depth(0, meters=False); cam.K(0); cam.pose(0)
     cam.depth_mask(0, conf_min=…)   # (H,W) bool, derived
     cam.dataset; cam.scene; cam.seq; cam.suffix; cam.tags
-    cam.set_attr("is_metric", True); cam.attr("THW")
-    cam.set_meta("scene", "x")      # the generic single-key accessors
+    cam.attr("THW"); cam.has("rgb")
+with H5Cam.open("cam.h5", "r+") as cam:   # writable: the generic single-key accessors
+    cam.set_attr("is_metric", True)
+    from h5scene import H5Base
+    H5Base.set_meta(cam, "scene", "x")   # single-key: value = set, None = remove
 
 # N cameras -> one references-only file (0 bytes of data in the rig file)
-rig = H5CamRig("rig.h5", ["cam0.h5", "cam1.h5", …], suffix="q")   # cams must share dataset+scene
-with H5CamRig("rig.h5") as rig:   # verifies the camera files exist
+rig = H5CamRig.build("rig.h5", ["cam0.h5", "cam1.h5", …], suffix="q")
+with H5CamRig.open("rig.h5") as rig:   # verifies the cameras still match the
+                                       # fingerprint stored at build (size/mtime)
     rig.shape                                  # (T, N, Hmax, Wmax)
-    rig.rgb(t, n)                            # camera n's NATIVE (H, W, 3)
+    rig.rgb(t, n)                            # camera n's NATIVE (H, W, 3) RGB
     rig.depth(t, n); rig.depth_mask(t, n)   # (Hmax, Wmax) — VDS; pad rows/cols = 0/False
     rig.cam_files; rig.cam_hw               # sources + per-camera (H, W)
 ```
 
-Rig rules: same T / is_metric / section set; **H or W identical across all
-cameras** (the other axis = max, top-left aligned, pad covered by the VDS
-fillvalue); missing a camera file → `FileNotFoundError` on open (a VDS would
-otherwise silently read the fillvalue). Camera files stay referenced (absolute
-paths in `attrs.cam_files`) — keep them where the rig expects them.
+Rig rules (all checked at BUILD, before any file is written; the build is
+write-temp-then-rename, so a failure never touches an existing output):
+same T / is_metric / **dataset / scene** (the cameras' seqs merge into one
+time axis — the rig has none); rgb present in ALL cameras or in NONE; same
+section set; depth at the camera's NATIVE (H, W) (downsampled depth is
+rejected — a VDS block cannot upscale); **H or W identical across all cameras**
+(the other axis = max, top-left aligned, pad covered by the VDS fillvalue).
+Shared split / tags / meta_json are inherited when every camera agrees.
+A missing or REWRITTEN camera file → `FileNotFoundError` / `ValueError` on
+open (a VDS would otherwise silently read the fillvalue). Camera files stay
+referenced (absolute paths in `attrs.cam_files`) — keep them where the rig
+expects them.
 
 Install editable: `pip install -e .` (needs numpy / opencv-python / h5py).
 Test: `pixi run -e test test`.

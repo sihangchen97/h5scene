@@ -8,18 +8,16 @@ Covers: mixed-H merge (one axis identical, other = max + pad), the strict
 checks (T / is_metric / section-set / both-axes-differ), VDS zero-copy +
 fillvalue pad, the source-file guard, and merge throughput.
 """
+from pathlib import Path
 import os
-import sys
 import tempfile
 import time
-from pathlib import Path
 
 import cv2
 import h5py
 import numpy as np
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from h5scene import H5Cam, H5CamRig  # noqa: E402
 
 

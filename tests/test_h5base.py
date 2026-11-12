@@ -1,13 +1,11 @@
 """Tests for H5Base (the file handle): lifecycle, the generic attr/meta
 accessors (registry-checked, type-checked), write_section."""
-import sys
-from pathlib import Path
 
+from pathlib import Path
 import numpy as np
 import pytest
 import h5py
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # h5scene/ (package root)
 from h5scene import H5Base, H5Cam  # noqa: E402
 
 

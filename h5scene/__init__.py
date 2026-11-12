@@ -51,17 +51,17 @@ axis onto it — written "[N]" where the rig adds one axis):
 
 H5Cam usage:
 
-    cam = H5Cam(path, T, H, W, is_metric=False)   # create (overwrites)
-    cam.set_rgb(rgb)          # (T,H,W,3) uint8 / flat (T,) image bytes / paths
+    cam = H5Cam.create(path, T, H, W, is_metric=False)   # create (overwrites)
+    cam.set_rgb(rgb)          # (T,H,W,3) uint8 / (H,W,3) (T=1) / (T,) image bytes / paths
     cam.set_depth(d); cam.set_depth_conf(c); cam.set_mask(m)
     cam.set_K(K); cam.set_pose(P)
     cam.set_meta(dataset=..., scene=..., seq=..., suffix=..., split=...,
                  meta_json=..., frame_indices=..., tags={...})   # multi-key
-    cam.close()                          # (or: with H5Cam(...) as cam: ...)
+    cam.close()                          # (or: with H5Cam.create(...) as cam: ...)
 
-    cam = H5Cam(path)                    # open an existing file (THW from attrs)
-    cam.shape, cam.is_metric, cam.has(name)
-    cam.rgb(t)                           # decoded (H, W, 3) uint8 (no bytes reader)
+    cam = H5Cam.open(path)               # open an existing file ("r" / "r+")
+    cam.shape, cam.is_metric, cam.has(name), cam.sections
+    cam.rgb(t)                           # decoded (H, W, 3) uint8 RGB (no bytes reader)
     cam.depth(t, meters=...) / cam.K(t) / cam.pose(t) / cam.mask(t) / cam.depth_conf(t)
     cam.depth_mask(t, conf_min=...)
     cam.dataset, cam.scene, cam.seq, cam.suffix, cam.split, cam.meta_json
@@ -71,8 +71,8 @@ H5Cam usage:
 
 H5CamRig usage:
 
-    rig = H5CamRig(path, cam_paths, suffix=...)   # cam_paths: existing .h5 files
-    rig = H5CamRig(path)                        # open (checks cam_files exist)
+    rig = H5CamRig.build(path, cam_paths, suffix=...)   # validate, write temp, rename
+    rig = H5CamRig.open(path)                           # verifies the cam fingerprint
     rig.shape                                   # (T, N, Hmax, Wmax)
     rig.rgb(t, n)   rig.depth(t, n, meters=...)  # (Hmax, Wmax); pad = 0/False
     rig.cam_files, rig.cam_hw                   # the absolute source files

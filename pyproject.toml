@@ -35,8 +35,6 @@ imgtest = { features = ["imgtest"], solve-group = "default" }
 
 [tool.pixi.tasks]
 test = "python -m pytest tests/ -q --ignore=tests/smoke_image_formats.py"
-smoke-img = "python tests/smoke_image_formats.py"
+smoke-img = "pixi run -e imgtest python tests/smoke_image_formats.py"
 
 [tool.pixi.dependencies]
-pillow = ">=13.0.0,<14"
-scikit-image = ">=0.26.0,<0.27"

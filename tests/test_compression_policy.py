@@ -4,14 +4,12 @@ Every filter choice below was measured on real probe data (see tests/probes/READ
 and the docstrings in h5scene/__init__.py); these tests keep the choices from
 silently drifting when the writer changes. Rerun: pixi run -e test test.
 """
-import sys
-from pathlib import Path
 
+from pathlib import Path
 import numpy as np
 import h5py
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # h5scene/ (package root)
 from h5scene import H5Cam  # noqa: E402
 
 PROBES = Path(__file__).resolve().parent / "probes"
