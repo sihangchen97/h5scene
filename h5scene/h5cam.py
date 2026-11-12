@@ -18,9 +18,6 @@ from .codecs import (FRAME_SHAPE, SECTIONS, broadcast_matrix, conf_frame, depth_
 from .codecs.rgb import decode_rgb
 from .h5base import H5Base, MetaSpec
 
-_STR_KEYS = ("dataset", "scene", "seq", "suffix", "split", "meta_json")
-
-
 class H5Cam(H5Base):
     """Single-camera sequence: attrs.THW = (T, H, W). create needs T, H, W
     (is_metric defaults False; a constructor failure removes the half-made
@@ -34,7 +31,6 @@ class H5Cam(H5Base):
                  "seq": str,               # sequence
                  "suffix": str,            # variant marker (train/val, camera/version)
                  "split": str,             # train/val split
-                 "meta_json": str,         # source metadata verbatim
                  "frame_indices": MetaSpec(np.ndarray, dtype=np.int64, length="T"),
                  "tags": MetaSpec(dict)}   # /meta/tags/* utf-8 (str values)
 
@@ -147,10 +143,6 @@ class H5Cam(H5Base):
     @property
     def split(self):
         return self.meta("split")
-
-    @property
-    def meta_json(self):
-        return self.meta("meta_json")
 
     @property
     def frame_indices(self):

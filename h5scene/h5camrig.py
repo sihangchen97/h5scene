@@ -217,10 +217,6 @@ class H5CamRig(H5Base):
         return self.meta("split")
 
     @property
-    def meta_json(self):
-        return self.meta("meta_json")
-
-    @property
     def tags(self):
         return self.meta("tags")
 
@@ -319,7 +315,7 @@ class H5CamRig(H5Base):
             dhw.append((c.H, c.W))
         # shared meta: inherited only when EVERY camera agrees (no None mixed in)
         shared = {}
-        for k in ("split", "meta_json", "tags"):
+        for k in ("split", "tags"):
             vals = [c.meta(k) for c in cams]
             if all(v is not None for v in vals) and len({repr(v) for v in vals}) == 1:
                 shared[k] = vals[0]

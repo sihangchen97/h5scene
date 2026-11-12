@@ -36,8 +36,7 @@ axis onto it — written "[N]" where the rig adds one axis):
       derived: .depth_mask(t[, n], conf_min=...) — (H,W) bool, not stored:
                  depth not an invalid sentinel (0 AND 65535 excluded) and,
                  if depth_conf present, conf > (0 if conf_min is None, else conf_min)
-      /meta/{dataset,scene[,seq],suffix,split,meta_json}  utf-8 (dataset-side
-              context; meta_json = source verbatim).
+      /meta/{dataset,scene[,seq],suffix,split}  utf-8 (dataset-side context).
               The location identity: (dataset, scene[, seq]) shared by several
               h5 = the same scene's cameras; seq is per-camera (the rig has
               none); suffix marks variants — see docs/schema.md
@@ -56,7 +55,7 @@ H5Cam usage:
     cam.set_depth(d); cam.set_depth_conf(c); cam.set_mask(m)
     cam.set_K(K); cam.set_pose(P)
     cam.set_meta(dataset=..., scene=..., seq=..., suffix=..., split=...,
-                 meta_json=..., frame_indices=..., tags={...})   # multi-key
+                 frame_indices=..., tags={...})   # multi-key
     cam.close()                          # (or: with H5Cam.create(...) as cam: ...)
 
     cam = H5Cam.open(path)               # open an existing file ("r" / "r+")
@@ -64,7 +63,7 @@ H5Cam usage:
     cam.rgb(t)                           # decoded (H, W, 3) uint8 RGB (no bytes reader)
     cam.depth(t, meters=...) / cam.K(t) / cam.pose(t) / cam.mask(t) / cam.depth_conf(t)
     cam.depth_mask(t, conf_min=...)
-    cam.dataset, cam.scene, cam.seq, cam.suffix, cam.split, cam.meta_json
+    cam.dataset, cam.scene, cam.seq, cam.suffix, cam.split
     cam.frame_indices, cam.tags
     cam.set_attr("is_metric", True); cam.attr("THW")     # the base accessors
     cam.set_meta("scene", "x")                          # single-key form (None = remove)

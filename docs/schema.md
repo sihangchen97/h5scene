@@ -39,7 +39,6 @@
   /meta/seq            str 序列(定位键 3,单相机才有)
   /meta/suffix         str 变体标记(train/val、相机/版本;定位键 4)
   /meta/split          str 标量(train/val/test)
-  /meta/meta_json      str 来源 JSON 原文(无损透传,库不解析)
   /meta/frame_indices  int64 (T,) 源帧号;仅 != arange(T) 时才写(dense 丢弃)
   /meta/tags/*         str 数据集侧标签(data_type/dynamics/environment/
                        view_density/view_type …),/meta/tags/ 子组,缺失的标签不写键
@@ -76,7 +75,6 @@
   /meta/scene        str 相机们必须一致(build 时 check)
   /meta/suffix       str rig 自己的变体标记(build 参数,默认空 = 不写)
   /meta/split        str 所有相机一致才继承
-  /meta/meta_json    str 所有相机一致才继承
   /meta/tags/*       str 所有相机一致才继承(/meta/tags/ 子组)
   # 没有 seq(合并后就是时间轴本身),也没有 frame_indices(各源帧号对合并轴无单一意义)
 ```

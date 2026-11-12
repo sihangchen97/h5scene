@@ -31,7 +31,7 @@ their own frame: `h['depth'][t]` vs `h['depth'][t, n]`).
   /K             f32    (T,N,3,3); (3,3) input broadcasts     [optional]
   /T             f32    (T,N,4,4) c2w; (4,4) input broadcasts [optional]
   /depth_conf    f16    (T,N,h,w) 0-1, same (h,w) as /depth, gzip4  [optional]
-  /meta/{dataset,scene[,seq],suffix,split,meta_json}  utf-8 [optional]
+  /meta/{dataset,scene[,seq],suffix,split}  utf-8 [optional]
   #   dataset/scene = the location identity; seq = the camera's sequence (H5Cam
   #   only); (dataset, scene, seq) shared by several h5 = the same scene's
   #   multi-view cameras -> merge them with H5CamRig
@@ -87,7 +87,7 @@ time axis — the rig has none); rgb present in ALL cameras or in NONE; same
 section set; depth at the camera's NATIVE (H, W) (downsampled depth is
 rejected — a VDS block cannot upscale); **H or W identical across all cameras**
 (the other axis = max, top-left aligned, pad covered by the VDS fillvalue).
-Shared split / tags / meta_json are inherited when every camera agrees.
+Shared split / tags are inherited when every camera agrees.
 A missing or REWRITTEN camera file → `FileNotFoundError` / `ValueError` on
 open (a VDS would otherwise silently read the fillvalue). Camera files stay
 referenced (absolute paths in `attrs.cam_files`) — keep them where the rig
