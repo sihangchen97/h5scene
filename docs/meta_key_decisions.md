@@ -1,5 +1,16 @@
 # h5scene metadata 键值决策(2026-11-13)
 
+> **2026-11-13 补充决定(4 键定位键)**:来源三键 `scene_path` / `source_dataset` / `scene_ids`
+> 退役,改为 4 个定位键 **`dataset` / `scene` / `seq` / `suffix`**。
+> 语义(用户定):`dataset` = 顶层数据集名;`(dataset, scene[, seq])` 相同的多个 h5 =
+> **同一 scene 的多视角相机**——在时序一致或 scene 静止时可拼成 N>1 的多相机数据集;
+> `suffix` 标 scene 内的变体(train/val、相机/版本)。
+> 依据:vggt_research/dataset 全量扫描发现目录深度 1~3 层不一(7scenes `<scene>/seq-NN.h5`、
+> co3d `<object>/<instance>/{train,val}.h5`、artemis `<res>/<cls>/<id>.h5`、matterport 顶层即场景 id),
+> 无机械规则能无损拆成固定 scene/seq 两层;且 vggt 侧 h5 本无 SpatialBench 三键(那是
+> SpatialBench pipeline 独有)。4 键全可选、不校验(填错不影响,`meta_json` 原文兜底)。
+> `split` / `tags` / `meta_json` / `frame_indices` 维持不变。
+
 参考文件(旧 sparse_h5 格式,只读了结构与标量,未动数据):
 - A: `SpatialBench/dataset/sparse_h5/7scenes/fire_seq-01_0.h5`(5 帧,3 MB,带 /spatialbench)
 - B: `vggt_research/dataset/7scenes/chess/seq-05.h5`(1000 帧,510 MB,**无** /spatialbench)
@@ -44,9 +55,9 @@
 ## 2. 我们 h5scene 现状(基线)
 
 现状(2026-11-13 落地后):`attrs.TNHW` + `attrs.is_metric`(数据侧);`/rgb` jpg q≤95、
-`/depth` uint16 mm、`/mask`、`/K`、`/T`、`/depth_conf`;`/meta/{scene_path,source_dataset,
-scene_ids,split,meta_json}` + `/meta/frame_indices` + `/meta/tags/`(数据集侧)。
-`set_meta(scene_path, source_dataset, scene_ids, split, meta_json, frame_indices, tags, is_metric)`。
+`/depth` uint16 mm、`/mask`、`/K`、`/T`、`/depth_conf`;`/meta/{dataset,scene,seq,suffix,
+split,meta_json}` + `/meta/frame_indices` + `/meta/tags/`(数据集侧;4 键定位键见顶部补充决定)。
+`set_meta(dataset, scene, seq, suffix, split, meta_json, frame_indices, tags, is_metric)`。
 `is_video` 已废弃(T>1 即视频序列,轴本身表达,见 D7 后的补充决定)。
 
 ## 3. 决策清单(逐个定,✅=定了 ⬜=待定)
@@ -55,8 +66,7 @@ scene_ids,split,meta_json}` + `/meta/frame_indices` + `/meta/tags/`(数据集侧
 - ✅ **D1** 按语义分:与**数据本身**直接相关的进 file attrs(TNHW 类),与**数据集来源**相关的进 `/meta` group。
   由此:`is_metric` 从 /meta **上移 attrs**(数据量纲属性);`/meta` 收敛为"数据集上下文"。
 - ✅ **D2** `meta_json` 原文**保留**,展开为结构化 key + 原文并存(无损;库不解析原文,只在 set_meta 时原样透传)。
-- ⬜ **D3** `scene_path` / `source_dataset` / `scene_ids`:从 meta_json 平铺成独立 key(便于 grep / 按数据集索引)?
-  按 D1 它们属数据集相关 → 进 /meta;问题是存不存冗余平铺,还是只留原文。
+- ✅ **D3** ~~三键平铺~~ → 被顶部 **4 键定位键决定**取代:改存 `dataset` / `scene` / `seq` / `suffix`。
 
 ### 3.2 帧级(轴 T)
 - ✅ **D4** `timestamps` 源时间:暂不存,后面有需要再说(读端缺省 arange)。
@@ -85,7 +95,7 @@ scene_ids,split,meta_json}` + `/meta/frame_indices` + `/meta/tags/`(数据集侧
   `scene_ids` 实测格式 = `{source_dataset}_{scene_path 斜杠转下划线}_sparse`(尾缀标处理链版本)。
 
 ### 3.4 来源与量纲
-- ⬜ **D14** `source_dataset` + `scene_path`:D3 若平铺则这里定最终 key 名(建议 `source_dataset` / `scene_path` 与现状一致)。
+- ✅ **D14** key 名:由 **4 键定位键**决定 —— `dataset` / `scene` / `seq` / `suffix`(取代 `source_dataset`/`scene_path`/`scene_ids`)。
 - ⬜ **D15** 深度量纲:我们固定 uint16 mm(0 与 65535 双哨兵)。旧文件与之一致(div1000)。
   建议:保持固定,不加 `depth_unit` key(值域写死,加 key 只留不确定的后门)。
 - ⬜ **D16** `intrinsic_mode`('shared' = 全帧同一 K):我们是 (T,N,3,3) 广播存储,shared 天然表达。建议:不存。
@@ -112,9 +122,11 @@ scene_ids,split,meta_json}` + `/meta/frame_indices` + `/meta/tags/`(数据集侧
   /T            f32 (T,N,4,4) raw                           (已有)
   /depth_conf   f16 (T,N,h,w) 0-1, gzip4, 与 depth 同 (h,w) (已有)
   # ---- /meta:数据集侧(来源/上下文)----
-  /meta/scene_path               str             (平铺,可选)
-  /meta/source_dataset           str             (平铺,可选)
-  /meta/scene_ids                str             (平铺,可选;跨 pipeline 锚)
+  /meta/dataset                  str             (顶层数据集名;定位键 1,可选)
+  /meta/scene                    str             (场景;定位键 2 —— (dataset,scene[,seq])
+                                                 相同的多 h5 = 该 scene 多视角相机,可选)
+  /meta/seq                      str             (序列;定位键 3,可选)
+  /meta/suffix                   str             (变体:train/val、相机/版本;定位键 4,可选)
   /meta/split                    str             (标量,可选;train/val/test)
   /meta/meta_json                str             (来源 JSON 原文,可选,无损透传)
   /meta/frame_indices            int64 (T,)     (可选,仅 ≠ arange(T) 时写;稀疏抽帧回查)
@@ -124,8 +136,10 @@ scene_ids,split,meta_json}` + `/meta/frame_indices` + `/meta/tags/`(数据集侧
 ### 迁移规则(旧 sparse_h5 → 新格式)
 - `/rgb` PNG 字节 → 按 q≤95 策略重编码;旧 key(源帧号)→ 新 t_n 派生 key,源帧号进 `frame_indices`。
 - `/depth` 全分辨率 mm → 原样可存(也可下采样存小);`/K` `/T` 形状直接兼容(N=1)。
-- `/meta` 旧键中:`is_metric` 上移 attrs;`scene_path`/`split`/`tags` 收入新 /meta;
+- `/meta` 旧键中:`is_metric` 上移 attrs;`split`/`tags` 收入新 /meta;
   `is_video` 与 `images`/`max_interval`/`has_mask`/`has_pose`/`group_type`/`timestamps`/
   `has_metadata_source`/`nframes` 一并**丢弃**(T/N 轴已表达视频性);
-  `spatialbench/meta_json` 原文 → /meta/meta_json,平铺 scene_path/source_dataset/scene_ids。
+  `spatialbench/meta_json` 原文 → /meta/meta_json;4 键按目录名填:
+  `dataset` = 顶层目录,`scene`/`seq`/`suffix` 由 scene_path 按数据集约定拆
+  (如 7scenes `fire_seq-01/0` → scene=fire, seq=seq-01, suffix=0)。
 - `/groups` `/group_scores` 空壳占位(查实为 arange(T) + 全 1.0)→ **丢弃**。

@@ -21,7 +21,9 @@ Per-scene HDF5 writer + `H5Scene` file handle with the unified
   /K             f32    (T,N,3,3); (3,3) input broadcasts     [optional]
   /T             f32    (T,N,4,4) c2w; (4,4) input broadcasts [optional]
   /depth_conf    f16    (T,N,H,W) 0-1, gzip4                  [optional]
-  /meta/{scene_path,source_dataset,scene_ids,split,meta_json}  utf-8 [optional]
+  /meta/{dataset,scene,seq,suffix,split,meta_json}  utf-8 [optional]
+  #   4 location keys: (dataset, scene[, seq]) shared by several h5 = the
+  #   same scene's multi-view cameras; suffix marks variants (train/val, camera)
   /meta/frame_indices  int64 (T,) — only when != arange(T)    [optional]
   /meta/tags/*         utf-8 (data_type/dynamics/environment/…) [optional]
   attrs: TNHW = int64 (T, N, H, W), is_metric bool (data-side)
@@ -39,7 +41,7 @@ s.set_depth(depth_m)              # float meters or uint16 mm (>65.535 m -> 0);
 s.set_depth_conf(conf)            # must be the same (h,w) as depth; -> (H,W) on read
 s.set_mask(mask)                  # full (H,W) only: (T,N,H,W) / (H,W) broadcast / (T,N) slots
 s.set_K(K); s.set_pose(pose)
-s.set_meta(scene_path=…, source_dataset=…, scene_ids=…, split=…, meta_json=…,
+s.set_meta(dataset=…, scene=…, seq=…, suffix=…, split=…, meta_json=…,
            frame_indices=[…], tags={"data_type": "real", …})   # see docs/meta_key_decisions.md
 s.close()
 
@@ -51,7 +53,7 @@ with H5Scene("s.h5") as s:       # open
     # s.depth / s.depth_conf come back at (H, W) — smaller stored sections are
     # resized (INTER_NEAREST); s.rgb_bytes returns the raw stored jpg bytes
     s.mask(t, n); s.depth_conf(t, n)
-    s.scene_path; s.source_dataset; s.scene_ids; s.split; s.meta_json
+    s.dataset; s.scene; s.seq; s.suffix; s.split; s.meta_json
     s.is_metric; s.frame_indices; s.tags        # tags: {data_type, dynamics, environment, …}
     s.depth_mask(t, n, conf_min=…)    # (H,W) bool, derived: depth valid (0/65535 excluded)
                                        # and, if depth_conf present, conf > 0 (or > conf_min)

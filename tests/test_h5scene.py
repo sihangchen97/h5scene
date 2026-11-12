@@ -14,7 +14,7 @@ from h5scene.rgb import _normalize_rgb  # noqa: E402
 
 
 def write_scene_h5(out_path, rgb, depth=None, mask=None, K=None, pose=None, depth_conf=None,
-                   scene_path=None, source_dataset=None, scene_ids=None, split=None,
+                   dataset=None, scene=None, seq=None, suffix=None, split=None,
                    meta_json=None, frame_indices=None, tags=None, is_metric=True):
     """One-shot (test-only): create a scene and write every given section."""
     t, n, h, w, _f = _normalize_rgb(rgb)
@@ -31,10 +31,10 @@ def write_scene_h5(out_path, rgb, depth=None, mask=None, K=None, pose=None, dept
             s.set_pose(pose)
         if depth_conf is not None:
             s.set_depth_conf(depth_conf)
-        if any(v is not None for v in (scene_path, source_dataset, scene_ids, split,
+        if any(v is not None for v in (dataset, scene, seq, suffix, split,
                                        meta_json, frame_indices, tags)):
-            s.set_meta(scene_path=scene_path, source_dataset=source_dataset,
-                       scene_ids=scene_ids, split=split, meta_json=meta_json,
+            s.set_meta(dataset=dataset, scene=scene, seq=seq, suffix=suffix,
+                       split=split, meta_json=meta_json,
                        frame_indices=frame_indices, tags=tags)
     finally:
         s.close()
@@ -94,8 +94,8 @@ def test_round_trip(tmp_path):
 
     out = str(tmp_path / "scene.h5")
     got = write_scene_h5(out, rgb, depth=depth_m, K=K, pose=Tpose, depth_conf=conf01,
-                         scene_path="a/b", source_dataset="7scenes",
-                         scene_ids="7scenes_a_b_sparse", split="test",
+                         dataset="7scenes", scene="a", seq="b",
+                         split="test",
                          frame_indices=[112, 125],       # (T,); == arange(T) would be omitted
                          tags={"data_type": "real", "environment": "indoor"},
                          meta_json='{"x": 1}')
@@ -122,9 +122,10 @@ def test_round_trip(tmp_path):
         assert c.dtype == np.float16 and c.max() <= 1.0
         assert np.array_equal(c, conf01.astype(np.float16))
         m = h["meta"]
-        assert m["scene_path"][()].decode() == "a/b"
-        assert m["source_dataset"][()].decode() == "7scenes"
-        assert m["scene_ids"][()].decode() == "7scenes_a_b_sparse"
+        assert m["dataset"][()].decode() == "7scenes"
+        assert m["scene"][()].decode() == "a"
+        assert m["seq"][()].decode() == "b"
+        assert "suffix" not in m
         assert m["split"][()].decode() == "test"
         assert m["meta_json"][()].decode() == '{"x": 1}'
         assert np.array_equal(m["frame_indices"][:], np.array([112, 125]))
@@ -383,11 +384,13 @@ def test_meta_keys(tmp_path):
     s = H5Scene(out, T, N, H, W)
     try:
         s.set_rgb(rgb)   # an openable H5Scene needs rgb keys; meta test below
-        s.set_meta(scene_path="fire_seq-01/0", source_dataset="7scenes",
+        # 7scenes/fire_seq-01/0 -> 4 location keys (see docs/meta_key_decisions.md)
+        s.set_meta(dataset="7scenes", scene="fire", seq="seq-01", suffix="0",
                    split="train", frame_indices=np.arange(T),
                    tags={"data_type": "real"})
-        assert s.scene_path == "fire_seq-01/0" and s.source_dataset == "7scenes"
-        assert s.split == "train" and s.scene_ids is None
+        assert s.dataset == "7scenes" and s.scene == "fire" and s.seq == "seq-01"
+        assert s.suffix == "0"
+        assert s.split == "train"
         assert s.frame_indices is None          # == arange(T) -> not stored (dense)
         assert s.tags == {"data_type": "real"}
         # dense arange indices are omitted; a real sparse set is stored
@@ -397,8 +400,8 @@ def test_meta_keys(tmp_path):
         s.set_meta(tags={"data_type": "synthetic", "environment": "indoor"}, split=None)
         assert s.tags == {"data_type": "synthetic", "environment": "indoor"}
         assert s.split is None
-        s.set_meta(scene_path=None)
-        assert s.scene_path is None
+        s.set_meta(dataset=None, scene=None, seq=None, suffix=None)
+        assert s.dataset is None and s.scene is None and s.seq is None and s.suffix is None
     finally:
         s.close()
     # is_metric: attrs on write, /meta fallback on legacy files
@@ -408,7 +411,7 @@ def test_meta_keys(tmp_path):
         h["meta"].create_dataset("is_metric", data=np.bool_(True))   # legacy layout
     with H5Scene(out) as s2:
         assert s2.is_metric is True                     # read via the /meta fallback
-        assert not s2.has("scene_path") and s2.has("frame_indices")
+        assert not s2.has("dataset") and s2.has("frame_indices")
 
 
 def test_open_missing_path_no_orphan(tmp_path):
@@ -472,8 +475,8 @@ def test_h5scene_file_handle(tmp_path):
         s.set_pose(pose)
         assert np.array_equal(s.K(0, 0), K) and np.array_equal(s.pose(0, 0), pose)
         assert np.array_equal(s.K(1, 1), K)
-        s.set_meta(scene_path="x/y", meta_json='{"a": 2}')
-        assert s.scene_path == "x/y" and s.meta_json == '{"a": 2}'
+        s.set_meta(dataset="7scenes", scene="chess", meta_json='{"a": 2}')
+        assert s.dataset == "7scenes" and s.scene == "chess" and s.meta_json == '{"a": 2}'
     finally:
         s.close()
 
@@ -485,7 +488,7 @@ def test_h5scene_file_handle(tmp_path):
                 assert np.abs(s2.rgb(t, n).astype(int) - rgb[t, n].astype(int)).max() <= 40
         assert s2.depth(0, 0)[0, 0] == 0
         assert np.array_equal(s2.mask(1, 1), mask[1, 1])
-        assert s2.scene_path == "x/y" and s2.meta_json == '{"a": 2}'
+        assert s2.dataset == "7scenes" and s2.scene == "chess" and s2.meta_json == '{"a": 2}'
 
     # overwrite via create-mode reuse; set_* replaces existing sections
     with H5Scene(out, T, N, H, W) as s3:

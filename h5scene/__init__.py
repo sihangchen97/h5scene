@@ -17,8 +17,11 @@ N = camera axis. Sections:
       derived: s.depth_mask(t, n, conf_min=…) — (H,W) bool, not stored:
                  depth not an invalid sentinel (0 AND 65535 excluded) and,
                  if depth_conf present, conf > (0 if conf_min is None, else conf_min)
-      /meta/{scene_path,source_dataset,scene_ids,split,meta_json}
-              utf-8 strings (dataset-side context; meta_json = source verbatim)
+      /meta/{dataset,scene,seq,suffix,split,meta_json}
+              utf-8 strings (dataset-side context; meta_json = source verbatim).
+              4 location keys: (dataset, scene[, seq]) shared by several h5 =
+              the same scene's multi-view cameras; suffix marks variants (train/val,
+              camera/version) — see docs/meta_key_decisions.md
       /meta/frame_indices  int64 (T,) source frame numbers; only when
               != arange(T) (dense: t already is the source frame)       [optional]
       /meta/tags/*         utf-8 strings (data_type/dynamics/…)        [optional]
@@ -52,14 +55,14 @@ H5Scene is a direct file handle (no in-memory data):
     s = H5Scene(path, T, N, H, W)     # create (overwrites), TNHW pinned in attrs
     s.set_rgb(frames_or_array)        # writes /rgb directly (shape validated)
     s.set_depth(d); s.set_mask(m); s.set_K(K); s.set_pose(P); s.set_depth_conf(c)
-    s.set_meta(scene_path=…, meta_json=…)
+    s.set_meta(dataset=…, scene=…, seq=…, suffix=…, meta_json=…)
     s.close()                         # (or: with H5Scene(…) as s: …)
 
     s = H5Scene(path)                 # open an existing file (TNHW read from attrs)
     s.shape, s.keys, s.has(name)
     s.rgb_bytes(t, n)  /  s.rgb(t, n)          # stored bytes / decoded (H,W,3)
     s.depth(t, n, meters=…) / s.K(t, n) / s.pose(t, n) / s.mask(t, n) / s.depth_conf(t, n)
-    s.scene_path, s.source_dataset, s.scene_ids, s.split, s.meta_json, s.is_metric
+    s.dataset, s.scene, s.seq, s.suffix, s.split, s.meta_json, s.is_metric
     s.frame_indices, s.tags
 """
 from .scene import H5Scene

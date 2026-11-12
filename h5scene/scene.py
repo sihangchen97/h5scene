@@ -165,13 +165,16 @@ class H5Scene:
         self._write("depth_conf", c, chunks=(1, 1, c.shape[2], c.shape[3]),
                     compression="gzip", compression_opts=4)
 
-    def set_meta(self, scene_path=None, source_dataset=None, scene_ids=None, split=None,
+    def set_meta(self, dataset=None, scene=None, seq=None, suffix=None, split=None,
                  meta_json=None, frame_indices=None, tags=None, is_metric=None):
         """Write the dataset-side /meta keys and the data-side attrs.is_metric
         (see docs/meta_key_decisions.md, 2026-11-13).
 
-        str keys (scene_path/source_dataset/scene_ids/split/meta_json):
-        value = upsert, None = remove if present.
+        str keys (dataset/scene/seq/suffix/split/meta_json): value = upsert,
+        None = remove if present. dataset/scene/seq/suffix are the 4 location
+        keys: (dataset, scene[, seq]) shared by several h5 = the same scene's
+        multi-view cameras (N>1 multi-camera datasets); suffix marks variants
+        (train/val, camera/version) — see docs/meta_key_decisions.md.
         is_metric (bool) -> attrs (data-side, depth/scale semantics).
         frame_indices: (T,) frame numbers in the source; stored only when
         NOT equal to arange(T) (dense sequences: t already is the source
@@ -184,8 +187,8 @@ class H5Scene:
             if "is_metric" in m:
                 del m["is_metric"]      # legacy location; reads still fall back
             h.attrs["is_metric"] = bool(is_metric)
-        for name, val in (("scene_path", scene_path), ("source_dataset", source_dataset),
-                          ("scene_ids", scene_ids), ("split", split), ("meta_json", meta_json)):
+        for name, val in (("dataset", dataset), ("scene", scene), ("seq", seq),
+                          ("suffix", suffix), ("split", split), ("meta_json", meta_json)):
             if name in m:
                 del m[name]
             if val is not None:
@@ -213,9 +216,8 @@ class H5Scene:
         return {"rgb": len(h["rgb"]) > 0, "depth": "depth" in h, "mask": "mask" in h,
                 "K": "K" in h, "T": "T" in h, "depth_conf": "depth_conf" in h,
                 "is_metric": "is_metric" in h.attrs or "is_metric" in m,
-                "scene_path": "scene_path" in m or "scene_path" in h,
-                "source_dataset": "source_dataset" in m,
-                "scene_ids": "scene_ids" in m,
+                "dataset": "dataset" in m, "scene": "scene" in m,
+                "seq": "seq" in m, "suffix": "suffix" in m,
                 "split": "split" in m,
                 "meta_json": "meta_json" in m or "meta_json" in h,
                 "frame_indices": "frame_indices" in m,
@@ -232,16 +234,20 @@ class H5Scene:
         return None
 
     @property
-    def scene_path(self):
-        return self._meta_str("scene_path")
+    def dataset(self):
+        return self._meta_str("dataset")
 
     @property
-    def source_dataset(self):
-        return self._meta_str("source_dataset")
+    def scene(self):
+        return self._meta_str("scene")
 
     @property
-    def scene_ids(self):
-        return self._meta_str("scene_ids")
+    def seq(self):
+        return self._meta_str("seq")
+
+    @property
+    def suffix(self):
+        return self._meta_str("suffix")
 
     @property
     def split(self):
