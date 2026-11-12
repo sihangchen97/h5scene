@@ -36,6 +36,7 @@ def _mk_cam(path, T, H, W, seed, has_depth=True):
         cam.set_rgb(b)
         if has_depth:
             cam.set_depth(np.full((T, H, W), 1.0 + t / 100.0, np.float32))
+        cam.set_meta(dataset="syn", scene="s", seq=f"q{seed}")   # seqs differ -> the rig merges them
     finally:
         cam.close()
 
@@ -51,9 +52,9 @@ def test_rig_mixed_hw(tmp_path):
     for i, (H, W) in enumerate(sizes):
         _mk_cam(paths[i], T, H, W, seed=10 + i)
     out = str(tmp_path / "rig.h5")
-    rig = H5CamRig(out, paths, meta={"dataset": "syn", "scene": "s", "seq": "q"})
+    rig = H5CamRig(out, paths, suffix="q")
     try:
-        assert rig.scene.shape == (T, 3, 64, 96)
+        assert rig.shape == (T, 3, 64, 96)
         H, W = 64, 96
         for n, (h, w) in enumerate(sizes):
             # rgb: ExternalLink -> the camera's native (h, w), not padded
@@ -99,7 +100,7 @@ def test_rig_is_metric_mismatch_rejected(tmp_path):
     a = str(tmp_path / "a.h5")
     _mk_cam(a, 4, 32, 48, seed=1)
     b = str(tmp_path / "b.h5")
-    with H5Cam(b, 4, 32, 48, is_metric=False) as cam:
+    with H5Cam(b, 4, 32, 48, is_metric=True) as cam:
         cam.set_rgb([cv2.imencode(".jpg", np.zeros((32, 48, 3), np.uint8))[1].tobytes()
                      for _ in range(4)])
     with pytest.raises(ValueError, match="is_metric"):
@@ -129,6 +130,17 @@ def test_rig_source_file_guard(tmp_path):
     with pytest.raises(FileNotFoundError, match="missing camera source"):
         H5CamRig(out)
 
+def test_rig_dataset_scene_mismatch_rejected(tmp_path):
+    a = str(tmp_path / "a.h5")
+    _mk_cam(a, 4, 32, 48, seed=1)
+    b = str(tmp_path / "b.h5")                      # different scene name
+    with H5Cam(b, 4, 32, 48) as cam:
+        cam.set_rgb([cv2.imencode(".jpg", np.zeros((32, 48, 3), np.uint8))[1].tobytes()
+                     for _ in range(4)])
+        cam.set_meta(dataset="syn", scene="other")
+    with pytest.raises(ValueError, match="scene mismatch"):
+        H5CamRig(str(tmp_path / "rig.h5"), [a, b])
+
 
 def test_rig_throughput(tmp_path):
     """Merge throughput at realistic scale (4 cams, T=20, 480x640, rgb+depth).
@@ -151,14 +163,14 @@ def test_rig_throughput(tmp_path):
         paths.append(p)
     out = str(tmp_path / "big.h5")
     t0 = time.perf_counter()
-    rig = H5CamRig(out, paths, meta={"dataset": "syn", "scene": "s"})
+    rig = H5CamRig(out, paths)
     dt = time.perf_counter() - t0
     try:
         nframes = T * 4
         print(f"\n[rig throughput] {nframes} frames (4 cams x T{W}x{480}) in "
               f"{dt:.2f}s ({dt / nframes * 1000:.1f} ms/frame), "
               f"out {Path(out).stat().st_size / 1e6:.1f} MB")
-        assert rig.scene.shape == (T, 4, 480, W)
+        assert rig.shape == (T, 4, 480, W)
         assert rig.rgb(0, 0).shape == (480, W, 3)
         with h5py.File(out, "r") as h:
             assert h["depth"].id.get_storage_size() == 0      # VDS, not copied

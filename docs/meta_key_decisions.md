@@ -1,5 +1,22 @@
 # h5scene metadata 键值决策(2026-11-13)
 
+> **2026-11-13 最终形态(H5Base 纯句柄;meta 注册表按类型校验)**:
+> - **H5Base = 纯文件句柄**(不再直接写 (T,N,H,W) 数据):open/create + 生命周期
+>   + 通用 `attr(name)`/`set_attr(name, value)` + `meta(name)`/`set_meta(name, value)`
+>   (按子类注册表查名 + isinstance 按声明类型校验)+ `write_section` 底层写。
+> - **每个派生类自己定义注册表** `ATTR_KEYS` / `META_KEYS`(dict:名字 → 期望
+>   Python 类型;`set_attr`/`set_meta` 写时 isinstance 校验)。H5Cam 的 META_KEYS
+>   含 `seq`(单相机有序列);**H5CamRig 的注册表没有 `seq`**(rig 无 seq 属性——
+>   它就是合并后的时间轴本身)。
+> - **rig 构造:`H5CamRig(path, cam_paths, suffix=…)`**(原 `meta=` 参数去掉):
+>   相机们**必须同 dataset、同 scene**(build 时 check,不一致拒绝;seq 可不同,
+>   合并进一根时间轴);rig 自己只写 dataset/scene(从相机继承) + 自己的
+>   `suffix`(变体标记,默认空)。
+> - **H5Cam**:`is_metric` 构造默认 False;`set_meta(dataset=…, scene=…, seq=…,
+>   suffix=…, split=…, meta_json=…, frame_indices=…, tags=…)` 多键便捷(只写
+>   给值的键),单键走基类 `H5Base.set_meta(cam, "scene", "x")`(None = 删)。
+> - rgb 可选(空 /rgb 组合法;有则键必须 0..T-1 完整)。
+
 > **2026-11-13 架构决定(H5Cam / H5CamRig 拆分,纯引用版已验证)**:H5Scene 拆成
 > 单相机序列类 **H5Cam**(形状 (T, H, W),attrs.THW,/rgb/{t} 每帧一个 dataset)+
 > 多相机融合 **H5CamRig**(N 个 H5Cam → 一个 (T, N, Hmax, Wmax) 文件,可直接被
