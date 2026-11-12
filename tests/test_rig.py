@@ -20,8 +20,7 @@ import numpy as np
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from h5scene.rig import H5Cam, H5CamRig  # noqa: E402
-from h5scene import H5Scene  # noqa: E402
+from h5scene import H5Cam, H5CamRig  # noqa: E402
 
 
 def _mk_cam(path, T, H, W, seed, has_depth=True):

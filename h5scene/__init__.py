@@ -1,7 +1,19 @@
-"""h5scene: per-scene HDF5 writer + H5Scene file handle, unified (T, N, H, W) layout.
+"""h5scene: per-scene HDF5 writers + file handles, unified (T, N, H, W) layout.
 
 T = time axis (T=1: time-constant scene, e.g. static multi-view),
-N = camera axis. Sections:
+N = camera axis. Three writers, three handles:
+
+- H5Base  (base.py)    — generic (T, N, H, W) writer + read handle over the
+  layout below; a direct file handle, no in-memory data.
+- H5Cam   (h5cam.py)   — single-camera sequence (T, H, W): the same layout
+  with the N axis collapsed; attrs.THW; /rgb/{t} one dataset per frame.
+- H5CamRig (h5camrig.py) — N H5Cam files -> one multi-camera (T, N, Hmax,
+  Wmax) file maintained as REFERENCES only (0 bytes of data): /rgb via
+  ExternalLinks to each camera's /rgb/{t}; /depth /mask /K /T /depth_conf
+  via HDF5 VIRTUAL datasets. Reads: rgb(t, n) at the camera's native (H, W);
+  the VDS sections at the common (Hmax, Wmax) (pad via fillvalue).
+
+File layout (H5Base; H5Cam is the same with N collapsed):
 
     <scene>.h5
       /rgb/{t}_{n}  uint8 1-D, image BYTES (jpg q<=95) — one dataset per frame,
@@ -10,8 +22,8 @@ N = camera axis. Sections:
                     0 AND 65535 both invalid, lossless gzip4 + shuffle;
                     depth(t,n) resizes (h,w) -> (H,W) on read (nearest)  [optional]
       /mask         bool   (T,N,H,W) 1 = valid pixel, 0 = padding, gzip4 [optional]
-      /K            f32    (T,N,3,3) "TN33"; (3,3) input broadcasts     [optional]
-      /T            f32    (T,N,4,4) "TN44"; (4,4) input broadcasts     [optional]
+      /K            f32    (T,N,3,3); (3,3) input broadcasts               [optional]
+      /T            f32    (T,N,4,4); (4,4) input broadcasts               [optional]
       /depth_conf   f16    (T,N,h,w) 0-1 (1 = full confidence), gzip4 —
                     same (h,w) as /depth, resized -> (H,W) on read      [optional]
       derived: s.depth_mask(t, n, conf_min=…) — (H,W) bool, not stored:
@@ -50,21 +62,23 @@ mask input: bool/uint8, 1 = valid pixel, 0 = padding, FULL scene (H, W) only —
 
 K/T input shapes: (3,3)/(4,4) broadcast to every (t,n); (T,N,…) stored as-is.
 
-H5Scene is a direct file handle (no in-memory data):
+H5Base is a direct file handle (no in-memory data):
 
-    s = H5Scene(path, T, N, H, W)     # create (overwrites), TNHW pinned in attrs
+    s = H5Base(path, T, N, H, W)     # create (overwrites), TNHW pinned in attrs
     s.set_rgb(frames_or_array)        # writes /rgb directly (shape validated)
     s.set_depth(d); s.set_mask(m); s.set_K(K); s.set_pose(P); s.set_depth_conf(c)
     s.set_meta(dataset=…, scene=…, seq=…, suffix=…, meta_json=…)
-    s.close()                         # (or: with H5Scene(…) as s: …)
+    s.close()                         # (or: with H5Base(…) as s: …)
 
-    s = H5Scene(path)                 # open an existing file (TNHW read from attrs)
+    s = H5Base(path)                  # open an existing file (TNHW read from attrs)
     s.shape, s.keys, s.has(name)
-    s.rgb(t, n)                 # decoded (H,W,3) uint8 (no bytes-level reader)
+    s.rgb(t, n)                       # decoded (H,W,3) uint8 (no bytes-level reader)
     s.depth(t, n, meters=…) / s.K(t, n) / s.pose(t, n) / s.mask(t, n) / s.depth_conf(t, n)
     s.dataset, s.scene, s.seq, s.suffix, s.split, s.meta_json, s.is_metric
     s.frame_indices, s.tags
 """
-from .scene import H5Scene
+from .h5base import H5Base
+from .h5cam import H5Cam
+from .h5camrig import H5CamRig
 
-__all__ = ["H5Scene"]
+__all__ = ["H5Base", "H5Cam", "H5CamRig"]

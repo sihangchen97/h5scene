@@ -1,4 +1,4 @@
-"""H5Scene: a direct per-scene HDF5 file handle (no in-memory data) over the
+"""H5Base: a direct per-scene HDF5 file handle (no in-memory data) over the
 unified (T, N, H, W) layout — every set_* writes straight into the file, every
 read comes straight out of the file."""
 import os
@@ -15,12 +15,12 @@ from .rgb import _normalize_rgb
 _STR = h5py.string_dtype(encoding="utf-8")
 
 
-class H5Scene:
+class H5Base:
     """Direct h5 file handle (no in-memory data): every set_* writes straight
     into the file (shape validated against the pinned TNHW), every read comes
     straight out of the file.
 
-    H5Scene(path, T, N, H, W) creates/overwrites; H5Scene(path) opens.
+    H5Base(path, T, N, H, W) creates/overwrites; H5Base(path) opens.
     is_metric (attrs) defaults True; the temporal-vs-multi-view distinction is
     the T/N axes themselves (T>1 video sequence), so there is no is_video key."""
     def __init__(self, path, t=None, n=None, h=None, w=None, is_metric=True):
@@ -42,7 +42,7 @@ class H5Scene:
             a = self._h
             if "TNHW" not in a.attrs or "meta" not in a:
                 self.close()
-                raise ValueError(f"{self.path}: not an H5Scene file (no attrs.TNHW / /meta)")
+                raise ValueError(f"{self.path}: not an H5Base file (no attrs.TNHW / /meta)")
             self.T, self.N, self.H, self.W = (int(x) for x in a.attrs["TNHW"])
             keys = _frame_keys(self.T, self.N)
             if len(a["rgb"]) != len(keys) or any(k not in a["rgb"] for k in keys):

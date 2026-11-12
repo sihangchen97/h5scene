@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "h5scene"
 version = "0.1.0"
-description = "Per-scene HDF5 writer + H5Scene file handle with the unified (T, N, H, W) layout."
+description = "Per-scene HDF5 writers + file handles (H5Base / H5Cam / H5CamRig) with the unified (T, N, H, W) layout; the rig file is references only (ExternalLinks + VDS)."
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [

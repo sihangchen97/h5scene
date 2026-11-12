@@ -1,5 +1,5 @@
-"""Tests for the h5scene package: H5Scene (direct file handle) + one-shot
-write/verify helpers (test-local: the library only exposes H5Scene)."""
+"""Tests for the h5scene package: H5Base (direct file handle) + one-shot
+write/verify helpers (test-local: the library only exposes H5Base)."""
 import sys
 import tempfile
 from pathlib import Path
@@ -9,7 +9,7 @@ import numpy as np
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # h5scene/ (package root)
-from h5scene import H5Scene  # noqa: E402
+from h5scene import H5Base  # noqa: E402
 from h5scene.convert import (_broadcast, _to_depth_conf, _to_depth_mm, _to_mask)  # noqa: E402
 from h5scene.rgb import _normalize_rgb  # noqa: E402
 
@@ -19,7 +19,7 @@ def write_scene_h5(out_path, rgb, depth=None, mask=None, K=None, pose=None, dept
                    meta_json=None, frame_indices=None, tags=None, is_metric=True):
     """One-shot (test-only): create a scene and write every given section."""
     t, n, h, w, _f = _normalize_rgb(rgb)
-    s = H5Scene(out_path, t, n, h, w, is_metric=is_metric)
+    s = H5Base(out_path, t, n, h, w, is_metric=is_metric)
     try:
         s.set_rgb(rgb)
         if depth is not None:
@@ -53,7 +53,7 @@ def verify_scene_h5(out_path, rgb, depth=None, mask=None, K=None, pose=None, dep
         msgs.append(msg)
 
     T, N, H, W, frames = _normalize_rgb(rgb)
-    with H5Scene(out_path) as s:
+    with H5Base(out_path) as s:
         if s.shape != (T, N, H, W):
             fail(f"stored shape {s.shape} != input {(T, N, H, W)}")
         for i in range(T * N):
@@ -223,7 +223,7 @@ def test_depth_mask(tmp_path):
     depth[1, 1] = 65535    # invalid sentinel (also written 0, but check the read path)
     out = str(tmp_path / "dm.h5")
     write_scene_h5(out, rgb, depth=depth)
-    with H5Scene(out) as s:
+    with H5Base(out) as s:
         m = s.depth_mask(0, 0)
         assert m.dtype == bool and m.shape == (H, W)
         # no conf section: only the two sentinels excluded, the rest valid
@@ -235,7 +235,7 @@ def test_depth_mask(tmp_path):
     conf[1, 0] = 0.5
     out = str(tmp_path / "dm2.h5")
     write_scene_h5(out, rgb, depth=depth, depth_conf=conf)
-    with H5Scene(out) as s:
+    with H5Base(out) as s:
         m = s.depth_mask(0, 0)
         assert not m[0, 1]                        # conf 0 -> excluded
         assert m[1, 0]                            # conf 0.5 -> passes the default gate
@@ -358,7 +358,7 @@ def test_depth_smaller_than_rgb(tmp_path):
     with h5py.File(out, "r") as hs:
         assert hs["depth"].shape == (T, N, h, w)       # stored small
         assert hs["depth_conf"].shape == (T, N, h, w)
-    with H5Scene(out) as s:
+    with H5Base(out) as s:
         d = s.depth(0, 0)                               # resized back to (H, W)
         assert d.shape == (H, W) and d.dtype == np.uint16
         assert d[0, 0] == 0                            # sentinel (0) survives nearest resize
@@ -369,7 +369,7 @@ def test_depth_smaller_than_rgb(tmp_path):
         assert m.shape == (H, W) and not m[0, 0]      # the sentinel maps to (0,0)
     # depth_conf at a DIFFERENT (h,w) than the depth is rejected
     out = str(tmp_path / "sd_bad.h5")
-    with H5Scene(out, T, N, H, W) as s:
+    with H5Base(out, T, N, H, W) as s:
         s.set_depth(depth_mm)
         with pytest.raises(ValueError, match=r"depth_conf"):
             s.set_depth_conf(np.ones((1, 1, 2, 2), np.float32))
@@ -385,9 +385,9 @@ def test_meta_keys(tmp_path):
     T, N, H, W = 3, 1, 4, 8
     rgb = np.zeros((T, N, H, W, 3), np.uint8)
     out = str(tmp_path / "mk.h5")
-    s = H5Scene(out, T, N, H, W)
+    s = H5Base(out, T, N, H, W)
     try:
-        s.set_rgb(rgb)   # an openable H5Scene needs rgb keys; meta test below
+        s.set_rgb(rgb)   # an openable H5Base needs rgb keys; meta test below
         # 7scenes/fire_seq-01/0 -> 4 location keys (see docs/meta_key_decisions.md)
         s.set_meta(dataset="7scenes", scene="fire", seq="seq-01", suffix="0",
                    split="train", frame_indices=np.arange(T),
@@ -413,35 +413,35 @@ def test_meta_keys(tmp_path):
     with h5py.File(out, "r+") as h:
         del h.attrs["is_metric"]
         h["meta"].create_dataset("is_metric", data=np.bool_(True))   # legacy layout
-    with H5Scene(out) as s2:
+    with H5Base(out) as s2:
         assert s2.is_metric is True                     # read via the /meta fallback
         assert not s2.has("dataset") and s2.has("frame_indices")
 
 
 def test_open_missing_path_no_orphan(tmp_path):
-    """OCR#3: H5Scene(missing) raises FileNotFoundError and leaves no orphan file."""
+    """OCR#3: H5Base(missing) raises FileNotFoundError and leaves no orphan file."""
     p = str(tmp_path / "nope.h5")
     with pytest.raises(FileNotFoundError):
-        H5Scene(p)
+        H5Base(p)
     import os
     assert not os.path.exists(p)
 
 
 def test_open_not_h5scene_closes_handle(tmp_path):
-    """OCR#3: a non-H5Scene file raises ValueError; handle closed, no crash on reuse."""
+    """OCR#3: a non-H5Base file raises ValueError; handle closed, no crash on reuse."""
     import h5py
     p = str(tmp_path / "plain.h5")
     with h5py.File(p, "w") as h:
         h.create_dataset("x", data=[1, 2, 3])
-    with pytest.raises(ValueError, match="not an H5Scene"):
-        H5Scene(p)
-    # the plain file is still openable and intact (no half-written H5Scene attrs)
+    with pytest.raises(ValueError, match="not an H5Base"):
+        H5Base(p)
+    # the plain file is still openable and intact (no half-written H5Base attrs)
     with h5py.File(p, "r") as h:
         assert "TNHW" not in h.attrs and "x" in h
 
 
 def test_h5scene_file_handle(tmp_path):
-    """H5Scene(path, T,N,H,W): create + set_* write straight into the file;
+    """H5Base(path, T,N,H,W): create + set_* write straight into the file;
     re-open reads straight back. No in-memory state, no save()."""
     T, N, H, W = 2, 2, 8, 16
     rng = np.random.default_rng(1)
@@ -458,7 +458,7 @@ def test_h5scene_file_handle(tmp_path):
     mask[1, 1, :, :3] = False
 
     out = str(tmp_path / "s.h5")
-    s = H5Scene(out, T, N, H, W)
+    s = H5Base(out, T, N, H, W)
     assert s.shape == (T, N, H, W)
     assert s.keys == [f"{t}_{n}" for t in range(T) for n in range(N)]
     assert s.is_metric
@@ -485,7 +485,7 @@ def test_h5scene_file_handle(tmp_path):
         s.close()
 
     # re-open: reads straight from the file, everything consistent
-    with H5Scene(out) as s2:
+    with H5Base(out) as s2:
         assert s2.shape == (T, N, H, W)
         for t in range(T):
             for n in range(N):
@@ -495,7 +495,7 @@ def test_h5scene_file_handle(tmp_path):
         assert s2.dataset == "7scenes" and s2.scene == "chess" and s2.meta_json == '{"a": 2}'
 
     # overwrite via create-mode reuse; set_* replaces existing sections
-    with H5Scene(out, T, N, H, W) as s3:
+    with H5Base(out, T, N, H, W) as s3:
         assert not s3.has("rgb")            # create wipes the old file
         s3.set_rgb(rgb)
         s3.set_mask(np.zeros((T, N, H, W), bool))  # replace the previous mask
@@ -506,7 +506,7 @@ def test_h5scene_file_handle(tmp_path):
 def test_h5scene_set_validation(tmp_path):
     T, N, H, W = 2, 2, 8, 16
     out = str(tmp_path / "v.h5")
-    with H5Scene(out, T, N, H, W) as s:
+    with H5Base(out, T, N, H, W) as s:
         s.set_rgb(np.zeros((T, N, H, W, 3), np.uint8))
         bad = (
             (lambda: s.set_depth(np.zeros((T, N, H, W + 1), np.uint16)), "depth"),
@@ -538,7 +538,7 @@ def test_h5scene_set_validation(tmp_path):
                 pass
     # create mode requires all four dims
     try:
-        H5Scene(str(tmp_path / "bad.h5"), 2)
+        H5Base(str(tmp_path / "bad.h5"), 2)
         raise AssertionError("create mode needs T,N,H,W")
     except ValueError:
         pass
@@ -549,9 +549,9 @@ def test_h5scene_absent_sections(tmp_path):
     arr = np.stack([np.full((H, W, 3), i, np.uint8) for i in range(T)], axis=0)[:, None]
     assert arr.shape == (T, N, H, W, 3)
     out = str(tmp_path / "bare.h5")
-    with H5Scene(out, T, N, H, W) as s:
+    with H5Base(out, T, N, H, W) as s:
         s.set_rgb(arr)
-    with H5Scene(out) as s2:
+    with H5Base(out) as s2:
         assert s2.shape == (T, N, H, W)
         for sec in ("depth", "mask", "K", "T", "depth_conf"):
             assert not s2.has(sec)

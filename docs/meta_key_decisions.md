@@ -20,7 +20,7 @@
 >   源文件压缩已生效)。
 > - **效率**:4 cam × T20 × 480×640 (rgb+depth) build ≈ **4.4 ms/frame**,
 >   **rg 文件 0 字节**(纯 attrs+链接+VDS 布局);访问时从源文件读(源文件常驻)。
-> - 实现:h5scene/rig.py(H5Cam + H5CamRig)。
+> - 实现:h5scene/h5cam.py (H5Cam) + h5scene/h5camrig.py (H5CamRig); 通用句柄 h5scene/h5base.py (H5Base, 原 scene.py/H5Scene 改名)。
 
 
 > **2026-11-13 补充决定(4 键定位键)**:来源三键 `scene_path` / `source_dataset` / `scene_ids`

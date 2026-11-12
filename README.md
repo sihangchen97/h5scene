@@ -1,16 +1,20 @@
 # h5scene
 
-Per-scene HDF5 writer + `H5Scene` file handle with the unified
-`(T, N, …)` layout (T = time, N = camera). One file, two APIs:
+Per-scene HDF5 writers + file handles with the unified `(T, N, H, W)` layout
+(T = time, N = camera). Three classes, one package:
 
-- `write_scene_h5(path, rgb, …)` / `verify_scene_h5(path, rgb, …)` — one-shot
-  write / byte-level verify (the functional API).
-- `H5Scene` — a **direct file handle, no in-memory data**:
-  `H5Scene(path, T, N, H, W)` creates (TNHW pinned in `attrs`),
-  `H5Scene(path)` opens; every `set_*` validates its shape against the pinned
-  TNHW and writes straight into the file; every read comes straight out.
+| class | file | shape | what it stores |
+|---|---|---|---|
+| `H5Base` | `h5base.py` | (T, N, H, W) | generic writer + read handle, layout below, data stored in the file |
+| `H5Cam`  | `h5cam.py`  | (T, H, W)    | single-camera sequence: same layout, N collapsed, `attrs.THW`, `/rgb/{t}` |
+| `H5CamRig` | `h5camrig.py` | (T, N, Hmax, Wmax) | N x H5Cam -> one file **of references only (0 bytes of data)**: `/rgb` via ExternalLinks to each camera's `/rgb/{t}`, `/depth` `/mask` `/K` `/T` `/depth_conf` via HDF5 **virtual datasets** |
 
-## Layout
+All three are plain file handles — no in-memory data. The rig file is also a
+valid `H5Base` file (open it with `H5Base` directly); `H5CamRig(path)` adds
+a source-file guard (missing/renamed camera files would otherwise make the
+VDS reads silently return fillvalues).
+
+## Layout (H5Base; H5Cam = same with N collapsed)
 
 ```
 <scene>.h5
@@ -32,9 +36,10 @@ Per-scene HDF5 writer + `H5Scene` file handle with the unified
 ## Usage
 
 ```python
-from h5scene import H5Scene
+from h5scene import H5Base, H5Cam, H5CamRig
 
-s = H5Scene("s.h5", T, N, H, W)
+# generic (T, N, H, W) file
+s = H5Base("s.h5", T, N, H, W)
 s.set_rgb(rgb)                    # (T,N,H,W,3) uint8 / (H,W,3) / image-bytes seq / file paths
 s.set_depth(depth_m)              # float meters or uint16 mm (>65.535 m -> 0);
                                   # may be stored at (h,w) < (H,W) if aspect ratio matches
@@ -45,7 +50,7 @@ s.set_meta(dataset=…, scene=…, seq=…, suffix=…, split=…, meta_json=…
            frame_indices=[…], tags={"data_type": "real", …})   # see docs/meta_key_decisions.md
 s.close()
 
-with H5Scene("s.h5") as s:       # open
+with H5Base("s.h5") as s:        # open
     s.shape, s.keys, s.has("depth")
     s.rgb(t, n)                  # decoded (H,W,3) uint8 (stored jpg q95, no bytes reader)
     s.depth(t, n, meters=True); s.K(t, n); s.pose(t, n)
@@ -53,29 +58,29 @@ with H5Scene("s.h5") as s:       # open
     # resized (INTER_NEAREST) on read
     s.mask(t, n); s.depth_conf(t, n)
     s.dataset; s.scene; s.seq; s.suffix; s.split; s.meta_json
-    s.is_metric; s.frame_indices; s.tags        # tags: {data_type, dynamics, environment, …}
+    s.is_metric; s.frame_indices; s.tags
     s.depth_mask(t, n, conf_min=…)    # (H,W) bool, derived: depth valid (0/65535 excluded)
                                        # and, if depth_conf present, conf > 0 (or > conf_min)
+
+# single-camera sequence
+cam = H5Cam("cam.h5", T, H, W)
+cam.set_rgb(per_frame_bytes); cam.set_depth(depth_m); cam.close()
+cam = H5Cam("cam.h5"); cam.rgb(0)   # (H, W, 3)
+
+# N cameras -> one references-only file (0 bytes of data in the rig file)
+rig = H5CamRig("rig.h5", ["cam0.h5", "cam1.h5", …], meta={"dataset": "…", "scene": "…"})
+with H5CamRig("rig.h5") as rig:     # verifies the camera files exist
+    rig.shape                                  # (T, N, Hmax, Wmax)
+    rig.rgb(t, n)                            # (h_n, w_n, 3) — the CAMERA'S native size
+    rig.depth(t, n); rig.depth_mask(t, n)   # (Hmax, Wmax) — VDS, pad rows/cols = 0/False
+    rig.cam_files; rig.cam_hw               # sources + per-camera (H, W)
 ```
 
-## Multi-camera rigs (h5scene.rig)
-
-N single-camera `H5Cam` sequences (shape (T, H, W)) -> one multi-camera file
-(T, N, Hmax, Wmax) with `H5CamRig`. Requires H or W identical across cameras
-(the other axis = max + pad, top-left aligned; pad = black / 0 / False via the
-VDS fillvalue). `/depth` `/mask` `/K` `/T` `/depth_conf` are stored as **HDF5
-virtual datasets** referencing the camera files (0 bytes in the rig file, the
-cameras' compressed data mapped directly); `/rgb` (variable-length jpg) is
-physically copied. The camera files stay referenced — keep them next to the
-rig file (absolute paths are recorded in `attrs.cam_files` and verified on
-open). See `docs/meta_key_decisions.md`.
-
-```python
-from h5scene.rig import H5Cam, H5CamRig
-rig = H5CamRig("rig.h5", ["cam0.h5", "cam1.h5"], meta={"dataset": "…", "scene": "…"})
-with H5CamRig("rig.h5") as rig:
-    rig.shape; rig.rgb(t, n); rig.depth(t, n); rig.depth_mask(t, n)   # == H5Scene
-```
+Rig rules: same T / is_metric / section set; **H or W identical across all
+cameras** (the other axis = max, top-left aligned, pad covered by the VDS
+fillvalue); missing a camera file -> `FileNotFoundError` on open. The camera
+files stay referenced (absolute paths in `attrs.cam_files`) — keep them where
+the rig expects them. See `docs/meta_key_decisions.md`.
 
 Install editable: `pip install -e .` (needs numpy / opencv-python / h5py).
 Test: `pytest` or `python -m pytest tests/`.
