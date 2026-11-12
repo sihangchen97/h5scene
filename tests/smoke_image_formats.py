@@ -60,7 +60,7 @@ def main() -> None:
 
     out_dir = src.parent / f"{src.stem}_fmt_test"
     out_dir.mkdir(parents=True, exist_ok=True)
-    img = Image.open(src).convert("RGB")
+    img = Image.fromarray(arr)
 
     variants: dict[str, np.ndarray] = {}
     sizes: dict[str, int] = {}
@@ -94,29 +94,35 @@ def main() -> None:
         print(f"  {a} vs {b}: psnr={m['psnr']}  ssim={m['ssim']}  "
               f"max={m['max']}  mean={m['mean']}")
 
-    # 4-panel comparison: crop the most-detailed 200x200 region, 2x zoom
-    x0 = y0 = 0
-    if min(h, w) >= 240:
+    # 6-panel comparison (ref + 5 variants): crop the most-detailed square
+    # region, 2x zoom. Falls back to the whole image for small inputs.
+    size = min(h, w)
+    if size >= 240:
+        side = 200
         var = np.var(arr.astype(np.float32), axis=2)
         step = 20
         best, best_v = (0, 0), -1.0
-        for y in range(0, h - 200 + 1, step):
-            for x in range(0, w - 200 + 1, step):
-                v = float(var[y:y + 200, x:x + 200].mean())
+        for y in range(0, h - side + 1, step):
+            for x in range(0, w - side + 1, step):
+                v = float(var[y:y + side, x:x + side].mean())
                 if v > best_v:
                     best, best_v = (y, x), v
         y0, x0 = best
-
-    crops = [arr[y0:y0 + 200, x0:x0 + 200]]
+    else:
+        side = size
+        x0 = (w - size) // 2
+        y0 = 0
+    crops = [arr[y0:y0 + side, x0:x0 + side]]
     for name in NAMES:
-        crops.append(variants[name][y0:y0 + 200, x0:x0 + 200])
+        crops.append(variants[name][y0:y0 + side, x0:x0 + side])
     panels = [Image.fromarray(c).resize((400, 400), Image.NEAREST) for c in crops]
     canvas = Image.new("RGB", (6 * 405 - 5, 400), "black")
     for i, p in enumerate(panels):
         canvas.paste(p, (i * 405, 0))
     cmp_path = out_dir / f"{src.stem}_compare.png"
     canvas.save(cmp_path)
-    print(f"\ncomparison (ref | png | jpg100 | jpg99 | jpg95 | jpg90, 2x zoom, 200x200 @ {x0},{y0}): {cmp_path}")
+    print(f"\ncomparison (ref | png | jpg100 | jpg99 | jpg95 | jpg90, 2x zoom, "
+          f"{side}x{side} @ {x0},{y0}): {cmp_path}")
 
 
 if __name__ == "__main__":

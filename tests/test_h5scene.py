@@ -1,13 +1,80 @@
-"""Tests for the h5scene package: write_scene_h5/verify_scene_h5 (functional
-API) + H5Scene (direct file handle)."""
+"""Tests for the h5scene package: H5Scene (direct file handle) + one-shot
+write/verify helpers (test-local: the library only exposes H5Scene)."""
 import sys
 import tempfile
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # h5scene/ (package root)
-from h5scene import H5Scene, write_scene_h5, verify_scene_h5  # noqa: E402
+from h5scene import H5Scene  # noqa: E402
+from h5scene.convert import (_broadcast, _to_depth_conf, _to_depth_mm, _to_mask)  # noqa: E402
+from h5scene.rgb import _normalize_rgb  # noqa: E402
+
+
+def write_scene_h5(out_path, rgb, depth=None, mask=None, K=None, pose=None, depth_conf=None,
+                   scene_path=None, meta_json=None, is_metric=True, is_video=True):
+    """One-shot (test-only): create a scene and write every given section."""
+    t, n, h, w, _f = _normalize_rgb(rgb)
+    s = H5Scene(out_path, t, n, h, w, is_metric=is_metric, is_video=is_video)
+    try:
+        s.set_rgb(rgb)
+        if depth is not None:
+            s.set_depth(depth)
+        if mask is not None:
+            s.set_mask(mask)
+        if K is not None:
+            s.set_K(K)
+        if pose is not None:
+            s.set_pose(pose)
+        if depth_conf is not None:
+            s.set_depth_conf(depth_conf)
+        if scene_path is not None or meta_json is not None:
+            s.set_meta(scene_path=scene_path, meta_json=meta_json)
+    finally:
+        s.close()
+    return t, n, h, w
+
+
+def verify_scene_h5(out_path, rgb, depth=None, mask=None, K=None, pose=None, depth_conf=None):
+    """One-shot (test-only): re-read the h5 and byte-compare every section
+    against the inputs (stored depth/depth_conf at their stored (h, w))."""
+    ok, msgs = True, []
+
+    def fail(msg):
+        nonlocal ok
+        ok = False
+        msgs.append(msg)
+
+    T, N, H, W, frames = _normalize_rgb(rgb)
+    with H5Scene(out_path) as s:
+        if s.shape != (T, N, H, W):
+            fail(f"stored shape {s.shape} != input {(T, N, H, W)}")
+        for i in range(T * N):
+            t, n = divmod(i, N)
+            fid = f"{t}_{n}"
+            try:
+                got = s.rgb_bytes(t, n)
+            except KeyError:
+                fail(f"rgb {fid} missing")
+                continue
+            if not np.array_equal(np.frombuffer(got, np.uint8), np.frombuffer(frames[i], np.uint8)):
+                fail(f"rgb {fid} bytes mismatch")
+        for name, check, expected in (
+            ("depth", lambda d: _to_depth_mm(d, T, N), depth),
+            ("mask", lambda m: _to_mask(m, T, N, H, W), mask),
+            ("K", lambda k: _broadcast(k, np.float32, T, N, (3, 3)), K),
+            ("T", lambda t: _broadcast(t, np.float32, T, N, (4, 4)), pose),
+            ("depth_conf", lambda c: _to_depth_conf(c, T, N), depth_conf),
+        ):
+            if expected is None:
+                if s.has(name):
+                    fail(f"{name} section present but input is None")
+                continue
+            if not s.has(name) or not np.array_equal(s._h[name][:], check(expected)):
+                fail(f"{name} mismatch")
+    return ok, msgs
 
 
 def test_round_trip(tmp_path):
@@ -52,21 +119,28 @@ def test_round_trip(tmp_path):
 
 
 def test_bytes_sequence(tmp_path):
-    """Flat list of raw png bytes: stored verbatim (bytes in == bytes out)."""
+    """jpg q95 frames stored verbatim (bytes in == bytes out); png re-encoded to jpg."""
     import cv2
     import h5py
-    frames = []
+    jpg95, png = [], []
     for i in range(3):
         img = np.full((8, 16, 3), i * 40, np.uint8)
-        frames.append(cv2.imencode(".png", img)[1].tobytes())
+        jpg95.append(cv2.imencode(".jpg", img, [int(cv2.IMWRITE_JPEG_QUALITY), 95])[1].tobytes())
+        png.append(cv2.imencode(".png", img)[1].tobytes())
     out = str(tmp_path / "seq.h5")
-    got = write_scene_h5(out, frames)
+    got = write_scene_h5(out, jpg95)
     assert got == (3, 1, 8, 16)
-    ok, msgs = verify_scene_h5(out, frames)
-    assert ok, msgs
+    assert verify_scene_h5(out, jpg95)[0]
     with h5py.File(out, "r") as h:
-        for i, b in enumerate(frames):
+        for i, b in enumerate(jpg95):  # q95 stored verbatim
             assert np.array_equal(h["rgb"][f"{i}_0"][:], np.frombuffer(b, np.uint8))
+    # png frames: detected non-jpg -> re-encoded to jpg q95 (not stored verbatim)
+    out = str(tmp_path / "seq_png.h5")
+    write_scene_h5(out, png)
+    with h5py.File(out, "r") as h:
+        b0 = bytes(h["rgb"]["0_0"][:])
+        assert b0[0] == 0xFF and b0[1] == 0xD8, "png frame was not re-encoded to jpg"
+        assert b0 != png[0]
 
 
 def test_mask(tmp_path):
@@ -149,6 +223,160 @@ def test_depth_mask(tmp_path):
     import h5py
     with h5py.File(out, "r") as h:
         assert "depth_mask" not in h
+
+
+# ---- rgb path input + jpg q95 policy ----------------------------------------
+
+def _write_png(tmp_path, img, name):
+    import cv2
+    p = tmp_path / name
+    cv2.imwrite(str(p), img)
+    return p
+
+
+def test_rgb_path_input(tmp_path):
+    """rgb accepts file paths (flat: T frames N=1; (T,N): N cameras per frame)."""
+    import cv2
+    H, W = 16, 32
+    a = cv2.imread(str(_write_png(tmp_path, np.full((H, W, 3), 30, np.uint8), "a.png")))
+    b = cv2.imread(str(_write_png(tmp_path, np.full((H, W, 3), 60, np.uint8), "b.png")))
+    assert a is not None and b is not None
+    out = str(tmp_path / "paths.h5")
+    # (T, N) grid: 2 frames x 2 cams
+    grid = np.array([[str(tmp_path / "a.png"), str(tmp_path / "b.png")],
+                     [str(tmp_path / "a.png"), str(tmp_path / "b.png")]], dtype=object)
+    got = write_scene_h5(out, grid)
+    assert got == (2, 2, H, W)
+    assert verify_scene_h5(out, grid)[0]
+    # flat: T frames, N=1
+    out = str(tmp_path / "flat.h5")
+    assert write_scene_h5(out, [str(tmp_path / "a.png"), str(tmp_path / "b.png")]) == (2, 1, H, W)
+    # single path string: 1 frame, N=1
+    out = str(tmp_path / "one.h5")
+    assert write_scene_h5(out, str(tmp_path / "a.png")) == (1, 1, H, W)
+
+
+def test_rgb_jpg_quality_policy(tmp_path):
+    """stored bytes are normalized to jpg q<=95:
+    q95 stored verbatim, q100 re-encoded to q95, png re-encoded to jpg."""
+    import cv2
+    import h5py
+    img = np.random.default_rng(0).integers(0, 256, (24, 40, 3)).astype(np.uint8)
+    q95 = cv2.imencode(".jpg", img, [int(cv2.IMWRITE_JPEG_QUALITY), 95])[1].tobytes()
+    q100 = cv2.imencode(".jpg", img, [int(cv2.IMWRITE_JPEG_QUALITY), 100])[1].tobytes()
+    png = cv2.imencode(".png", img)[1].tobytes()
+
+    # q95 -> verbatim
+    out = str(tmp_path / "q95.h5")
+    write_scene_h5(out, [q95])
+    with h5py.File(out, "r") as h:
+        assert np.array_equal(h["rgb"]["0_0"][:], np.frombuffer(q95, np.uint8))
+
+    # q100 -> re-encoded to q95 (not verbatim, and smaller than the q100 source)
+    out = str(tmp_path / "q100.h5")
+    write_scene_h5(out, [q100])
+    with h5py.File(out, "r") as h:
+        stored = bytes(h["rgb"]["0_0"][:])
+        assert stored != q100 and stored != q95
+        assert stored[:3] == bytes((0xFF, 0xD8, 0xFF))  # still a jpeg
+
+    # png -> re-encoded to jpg
+    out = str(tmp_path / "png.h5")
+    write_scene_h5(out, [png])
+    with h5py.File(out, "r") as h:
+        assert bytes(h["rgb"]["0_0"][:])[:2] == bytes((0xFF, 0xD8))
+
+
+def test_rgb_mismatched_resolution(tmp_path):
+    """OCR#4: a later frame with a different size is rejected, not silently stored."""
+    import cv2
+    H, W = 16, 32
+    a = str(_write_png(tmp_path, np.zeros((H, W, 3), np.uint8), "a.png"))
+    b = str(_write_png(tmp_path, np.zeros((H, W * 2, 3), np.uint8), "b.png"))
+    out = str(tmp_path / "bad.h5")
+    with pytest.raises(ValueError, match=r"size"):
+        write_scene_h5(out, [a, b])
+
+
+def test_mask_slot_pixel_ambiguity(tmp_path):
+    """OCR#2: a 2-D mask is rejected when (T,N) == (H,W); per-slot else works."""
+    # unambiguous: T,N != H,W -> per-slot
+    H, W = 4, 8
+    rgb = np.zeros((2, 2, H, W, 3), np.uint8)
+    slot = np.array([[True, False], [True, True]])
+    out = str(tmp_path / "slot.h5")
+    write_scene_h5(out, rgb, mask=slot)
+    ok, _ = verify_scene_h5(out, rgb, mask=slot)
+    assert ok
+    # ambiguous: T == H and N == W (T=4, N=8 == H,W) -> must raise
+    rgb2 = np.zeros((4, 8, 4, 8, 3), np.uint8)
+    amb = np.ones((4, 8), bool)
+    with pytest.raises(ValueError, match=r"ambiguous"):
+        write_scene_h5(str(tmp_path / "amb.h5"), rgb2, mask=amb)
+    # explicit (T,N,H,W) pixel mask still works in the same scene
+    pix = np.ones((4, 8, 4, 8), bool)
+    pix[0, 0, 0, 0] = False
+    write_scene_h5(str(tmp_path / "pix.h5"), rgb2, mask=pix)
+    assert verify_scene_h5(str(tmp_path / "pix.h5"), rgb2, mask=pix)[0]
+
+
+def test_depth_smaller_than_rgb(tmp_path):
+    """depth/depth_conf may be stored at (h,w) < (H,W) if the aspect ratio
+    matches; depth_conf must match depth's (h,w); reads resize back to (H,W)."""
+    T, N, H, W = 1, 1, 6, 8          # 6/8 ratio
+    h, w = 3, 4                      # 3/4 — same ratio, half resolution
+    rgb = np.zeros((T, N, H, W, 3), np.uint8)
+    depth_mm = np.arange(h * w, dtype=np.uint16).reshape(h, w)   # stored SMALL
+    depth_mm[0, 0] = 0              # an invalid sentinel to check survives resize
+    conf = np.ones((T, N, h, w), np.float32)
+    out = str(tmp_path / "sd.h5")
+    write_scene_h5(out, rgb, depth=depth_mm, depth_conf=conf)
+    assert verify_scene_h5(out, rgb, depth=depth_mm, depth_conf=conf)[0]
+    import h5py
+    with h5py.File(out, "r") as hs:
+        assert hs["depth"].shape == (T, N, h, w)       # stored small
+        assert hs["depth_conf"].shape == (T, N, h, w)
+    with H5Scene(out) as s:
+        d = s.depth(0, 0)                               # resized back to (H, W)
+        assert d.shape == (H, W) and d.dtype == np.uint16
+        assert d[0, 0] == 0                            # sentinel (0) survives nearest resize
+        assert d[H - 1, W - 1] == h * w - 1           # nearest: bottom-right maps to (h-1,w-1)
+        c = s.depth_conf(0, 0)
+        assert c.shape == (H, W) and c.all()
+        m = s.depth_mask(0, 0)
+        assert m.shape == (H, W) and not m[0, 0]      # the sentinel maps to (0,0)
+    # depth_conf at a DIFFERENT (h,w) than the depth is rejected
+    out = str(tmp_path / "sd_bad.h5")
+    with H5Scene(out, T, N, H, W) as s:
+        s.set_depth(depth_mm)
+        with pytest.raises(ValueError, match=r"depth_conf"):
+            s.set_depth_conf(np.ones((1, 1, 2, 2), np.float32))
+    # wrong aspect ratio (h,w) is rejected
+    out = str(tmp_path / "sd_ratio.h5")
+    with pytest.raises(ValueError, match=r"aspect ratio"):
+        write_scene_h5(out, rgb, depth=np.ones((T, N, 2, 4), np.uint16))
+
+
+def test_open_missing_path_no_orphan(tmp_path):
+    """OCR#3: H5Scene(missing) raises FileNotFoundError and leaves no orphan file."""
+    p = str(tmp_path / "nope.h5")
+    with pytest.raises(FileNotFoundError):
+        H5Scene(p)
+    import os
+    assert not os.path.exists(p)
+
+
+def test_open_not_h5scene_closes_handle(tmp_path):
+    """OCR#3: a non-H5Scene file raises ValueError; handle closed, no crash on reuse."""
+    import h5py
+    p = str(tmp_path / "plain.h5")
+    with h5py.File(p, "w") as h:
+        h.create_dataset("x", data=[1, 2, 3])
+    with pytest.raises(ValueError, match="not an H5Scene"):
+        H5Scene(p)
+    # the plain file is still openable and intact (no half-written H5Scene attrs)
+    with h5py.File(p, "r") as h:
+        assert "TNHW" not in h.attrs and "x" in h
 
 
 def test_h5scene_file_handle(tmp_path):
@@ -282,6 +510,14 @@ if __name__ == "__main__":
     test_bytes_sequence(Path(tempfile.mkdtemp()))
     test_mask(Path(tempfile.mkdtemp()))
     test_single_frame_no_optional(Path(tempfile.mkdtemp()))
+    test_depth_mask(Path(tempfile.mkdtemp()))
+    test_rgb_path_input(Path(tempfile.mkdtemp()))
+    test_rgb_jpg_quality_policy(Path(tempfile.mkdtemp()))
+    test_rgb_mismatched_resolution(Path(tempfile.mkdtemp()))
+    test_mask_slot_pixel_ambiguity(Path(tempfile.mkdtemp()))
+    test_depth_smaller_than_rgb(Path(tempfile.mkdtemp()))
+    test_open_missing_path_no_orphan(Path(tempfile.mkdtemp()))
+    test_open_not_h5scene_closes_handle(Path(tempfile.mkdtemp()))
     test_h5scene_file_handle(Path(tempfile.mkdtemp()))
     test_h5scene_set_validation(Path(tempfile.mkdtemp()))
     test_h5scene_absent_sections(Path(tempfile.mkdtemp()))

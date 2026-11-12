@@ -9,14 +9,14 @@ description = "Per-scene HDF5 writer + H5Scene file handle with the unified (T, 
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
-    "numpy",
-    "opencv-python",
-    "h5py",
+    "numpy>=1.24,<3",
+    "opencv-python>=4.8,<5",
+    "h5py>=3.8,<4",
 ]
 
 [project.optional-dependencies]
 test = ["pytest"]
-imgtest = ["scikit-image"]
+imgtest = ["scikit-image>=0.26,<0.27", "pillow>=13,<14"]
 
 [tool.setuptools.packages.find]
 include = ["h5scene*"]
@@ -34,7 +34,7 @@ test = { features = ["test"], solve-group = "default" }
 imgtest = { features = ["imgtest"], solve-group = "default" }
 
 [tool.pixi.tasks]
-test = "python -m pytest tests/ -q"
+test = "python -m pytest tests/ -q --ignore=tests/smoke_image_formats.py"
 smoke-img = "python tests/smoke_image_formats.py"
 
 [tool.pixi.dependencies]
