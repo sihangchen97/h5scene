@@ -60,7 +60,7 @@ H5Scene is a direct file handle (no in-memory data):
 
     s = H5Scene(path)                 # open an existing file (TNHW read from attrs)
     s.shape, s.keys, s.has(name)
-    s.rgb_bytes(t, n)  /  s.rgb(t, n)          # stored bytes / decoded (H,W,3)
+    s.rgb(t, n)                 # decoded (H,W,3) uint8 (no bytes-level reader)
     s.depth(t, n, meters=…) / s.K(t, n) / s.pose(t, n) / s.mask(t, n) / s.depth_conf(t, n)
     s.dataset, s.scene, s.seq, s.suffix, s.split, s.meta_json, s.is_metric
     s.frame_indices, s.tags

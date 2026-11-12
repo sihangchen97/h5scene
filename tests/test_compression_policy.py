@@ -8,6 +8,7 @@ import sys
 from pathlib import Path
 
 import numpy as np
+import h5py
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # h5scene/ (package root)
@@ -119,8 +120,8 @@ def test_rgb_stored_jpg95_smaller_than_png_and_lossy(tmp_path):
     out = str(tmp_path / "rgb_only.h5")
     s = H5Scene(out, 1, 1, h_, w_)
     s.set_rgb(img)
-    stored = s.rgb_bytes(0, 0)
     s.close()
+    stored = h5py.File(out, "r")["rgb"]["0_0"][:]   # raw stored bytes
     png = cv2.imencode(".png", img)[1]
     assert len(stored) < 0.5 * len(png), (
         f"rgb no longer smaller than png: {len(stored)} vs {len(png)} B — "

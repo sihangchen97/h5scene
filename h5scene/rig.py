@@ -2,13 +2,16 @@
 multi-camera H5Scene file (shape (T, N, H, W)). PROTOTYPE for feasibility —
 promote to a stable API after the probe tests pass.
 
-Rules (strict checks at merge time, see tests/probes/rig_prototype.py):
-- every camera must have the SAME T; is_metric must match.
-- per-camera (H, W) may DIFFER: the rig stores the common (Hmax, Wmax)
-  (max over cameras); a camera's smaller image is padded, top-left aligned
-  (black fill for rgb, 0 = invalid for depth / depth_conf, 0 = padding for
-  mask). The stored mask is True only inside the camera's real pixels, so
-  downstream consumers see exactly the real region per (t, n).
+Rules (strict checks at merge time, see tests/test_rig.py):
+- every camera must have the SAME T; is_metric must match; the section set
+  (depth/mask/K/T/depth_conf present) must be identical across cameras.
+- ONE axis must be identical across ALL cameras (H or W); only the other
+  axis may differ. The rig stores (Hmax, Wmax) = max over cameras and pads
+  smaller cameras top-left aligned (rgb black, depth/depth_conf 0 = invalid,
+  mask False = padding) so the real region per (t, n) is exact.
+- reading exposes rgb(t, n) only (decoded (H, W, 3)) — no bytes-level reader.
+  merge copies stored bytes verbatim when the camera is already (H, W); it
+  re-encodes (jpg q95) only the frames of smaller, padded cameras.
 - K / pose are per-camera, no HW involved: stored (T, N, 3, 3) / (T, N, 4, 4).
 - output is a plain H5Scene file (TNHW attrs, t_n rgb keys) — openable by
   H5Scene directly; no rig-specific section.
@@ -76,10 +79,10 @@ class H5Cam:
             del h[name]
         h.create_dataset(name, data=data, **kw)
 
-    def set_rgb(self, rgb_bytes):
-        """(T,) image bytes (any format <= jpg q95 policy is applied by
-        H5CamRig, not here — H5Cam stores raw bytes verbatim)."""
-        b = np.asarray(rgb_bytes, dtype=object)
+    def set_rgb(self, rgb):
+        """(T,) image bytes (stored verbatim; the jpg q95 policy is applied
+        by merge_rig, not here)."""
+        b = np.asarray(rgb, dtype=object)
         if b.ndim != 1 or b.shape[0] != self.T:
             raise ValueError(f"rgb must be (T,) = ({self.T},), got {b.shape}")
         rg = self._h.require_group("rgb")
@@ -127,15 +130,13 @@ class H5Cam:
             raise KeyError(f"no {name} section")
         return self._h[name][t][:]
 
-    def rgb_bytes(self, t=0):
+    def rgb(self, t=0):
+        """Frame t decoded: (H, W, 3) uint8 RGB (no bytes-level reader)."""
         if not (0 <= t < self.T):
             raise IndexError(f"t={t} out of range (T={self.T})")
         if "rgb" not in self._h or f"{t}" not in self._h["rgb"]:
             raise KeyError(f"no rgb frame {t}")
-        return self._h["rgb"][f"{t}"][:].tobytes()
-
-    def rgb(self, t=0):
-        img = cv2.imdecode(np.frombuffer(self.rgb_bytes(t), np.uint8), cv2.IMREAD_COLOR)
+        img = cv2.imdecode(self._h["rgb"][f"{t}"][:], cv2.IMREAD_COLOR)
         if img is None:
             raise ValueError(f"rgb frame {t} not decodable")
         return img
@@ -169,6 +170,13 @@ def merge_rig(cam_paths, out_path, meta=None):
         if len(met) != 1:
             raise ValueError(f"camera is_metric mismatch: {sorted(met)}")
         is_metric = met.pop()
+        # STRICT (rig level): one axis must be identical across ALL cameras;
+        # only the other axis may differ and is taken as max + padded.
+        hs = {c.H for c in cams}
+        ws = {c.W for c in cams}
+        if len(hs) > 1 and len(ws) > 1:
+            raise ValueError(
+                f"rig needs H or W identical across cameras; got H={sorted(hs)} W={sorted(ws)}")
         H = max(c.H for c in cams)
         W = max(c.W for c in cams)
         N = len(cams)
@@ -184,14 +192,14 @@ def merge_rig(cam_paths, out_path, meta=None):
             rg = s._h.require_group("rgb")
             for n, c in enumerate(cams):
                 for t in range(T):
-                    b = c.rgb_bytes(t)
-                    img = cv2.imdecode(np.frombuffer(b, np.uint8), cv2.IMREAD_COLOR)
+                    b = c._h["rgb"][f"{t}"][:]
+                    img = cv2.imdecode(b, cv2.IMREAD_COLOR)
                     if img is None:
                         raise ValueError(f"cam {n} frame {t} not decodable")
                     if img.shape[:2] != (c.H, c.W):
                         raise ValueError(f"cam {n} frame {t} size {img.shape[:2]} "
                                          f"!= declared ({c.H},{c.W})")
-                    if (c.H, c.W) != (H, W):  # pad top-left, black fill
+                    if (c.H, c.W) != (H, W):  # smaller cam: pad top-left, black fill
                         canvas = np.zeros((H, W, 3), np.uint8)
                         canvas[:c.H, :c.W] = img
                         b = _encode_jpg(canvas)

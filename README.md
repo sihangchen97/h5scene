@@ -47,11 +47,10 @@ s.close()
 
 with H5Scene("s.h5") as s:       # open
     s.shape, s.keys, s.has("depth")
-    s.rgb_bytes(t, n)            # stored jpg q95 bytes
-    s.rgb(t, n)                  # decoded (H,W,3) uint8
+    s.rgb(t, n)                  # decoded (H,W,3) uint8 (stored jpg q95, no bytes reader)
     s.depth(t, n, meters=True); s.K(t, n); s.pose(t, n)
     # s.depth / s.depth_conf come back at (H, W) — smaller stored sections are
-    # resized (INTER_NEAREST); s.rgb_bytes returns the raw stored jpg bytes
+    # resized (INTER_NEAREST) on read
     s.mask(t, n); s.depth_conf(t, n)
     s.dataset; s.scene; s.seq; s.suffix; s.split; s.meta_json
     s.is_metric; s.frame_indices; s.tags        # tags: {data_type, dynamics, environment, …}

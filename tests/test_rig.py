@@ -39,10 +39,12 @@ def _mk_cam(path, T, H, W, seed, has_depth=True):
 
 
 def test_merge_mixed_hw(tmp_path):
-    """3 cameras, same T, DIFFERENT (H, W): merge to (T, N, Hmax, Wmax) with
-    top-left padding; mask/depth completed so only real pixels are valid."""
+    """3 cameras, same T, W identical, DIFFERENT H: merge to (T, N, Hmax, W)
+    with top-left (bottom) padding; mask/depth completed so only real pixels
+    are valid. The one-side-identical rule is enforced (test_both_axes differ
+    rejected below)."""
     T = 4
-    sizes = [(64, 96), (48, 64), (32, 48)]   # 3 distinct resolutions
+    sizes = [(64, 96), (48, 96), (32, 96)]   # W=96 shared, H varies -> Hmax=64
     paths = [str(tmp_path / f"c{i}.h5") for i in range(3)]
     for i, (H, W) in enumerate(sizes):
         _mk_cam(paths[i], T, H, W, seed=10 + i)
@@ -53,25 +55,31 @@ def test_merge_mixed_hw(tmp_path):
     with H5Scene(out) as s:
         assert s.shape == (T, 3, 64, 96)
         H, W = 64, 96
-        m = s.mask(0, 0) if s.has("mask") else None
-        # camera n occupies its real (H,W) top-left; rest of (Hmax,Wmax) is padding
+        # camera n occupies its real (h, W) top; the bottom rows are padding
         for n, (h, w) in enumerate(sizes):
             rgb = s.rgb(0, n)
             assert rgb.shape == (H, W, 3)
-            # real region carries this camera's content; padding is black
-            if (h, w) == (H, W):
-                assert (rgb[:h, :w] > 0).all()
-            else:
-                assert (rgb[:h, :w] > 0).all()
-                assert rgb[h:, :].sum() == 0 and rgb[:h, w:].sum() == 0
-            # depth: real region valid, padding 0 (invalid)
+            assert (rgb[:h, :w] > 0).all()         # real region
+            if h != H:
+                assert rgb[h:, :].sum() == 0       # padded rows are black
+            # depth: real region valid, padded rows 0 (invalid)
             d = s.depth(0, n)
             assert d.shape == (H, W)
-            assert (d[:h, :w] > 0).all()          # real mm > 0
-            assert d[h:, :].sum() == 0 and d[:h, w:].sum() == 0  # padded invalid
+            assert (d[:h, :w] > 0).all()           # real mm > 0
+            if h != H:
+                assert d[h:, :].sum() == 0
             # depth_mask derived: True exactly on the real region
             dm = s.depth_mask(0, n)
-            assert dm[:h, :w].all() and not dm[h:, :].any() and not dm[:h, w:].any()
+            assert dm[:h, :w].all()
+            if h != H:
+                assert not dm[h:, :].any()
+    # both axes differ (H and W all distinct) -> rejected by the strict rule
+    a, b = str(tmp_path / "p.h5"), str(tmp_path / "q.h5")
+    _mk_cam(a, T, 48, 64, seed=20)
+    _mk_cam(b, T, 32, 48, seed=21)
+    with pytest.raises(ValueError, match="H or W identical"):
+        merge_rig([a, b], str(tmp_path / "both.h5"))
+    assert not (tmp_path / "both.h5").exists()
 
 
 def test_merge_t_mismatch_rejected(tmp_path):

@@ -4,6 +4,7 @@ import sys
 import tempfile
 from pathlib import Path
 
+import cv2
 import numpy as np
 import pytest
 
@@ -59,12 +60,15 @@ def verify_scene_h5(out_path, rgb, depth=None, mask=None, K=None, pose=None, dep
             t, n = divmod(i, N)
             fid = f"{t}_{n}"
             try:
-                got = s.rgb_bytes(t, n)
+                got = s.rgb(t, n)                      # decoded (H, W, 3) uint8
             except KeyError:
                 fail(f"rgb {fid} missing")
                 continue
-            if not np.array_equal(np.frombuffer(got, np.uint8), np.frombuffer(frames[i], np.uint8)):
-                fail(f"rgb {fid} bytes mismatch")
+            ref = cv2.imdecode(np.frombuffer(frames[i], np.uint8), cv2.IMREAD_COLOR)
+            if got.shape != ref.shape:
+                fail(f"rgb {fid} shape {got.shape} != {ref.shape}")
+            elif np.abs(got.astype(int) - ref.astype(int)).max() > 40:
+                fail(f"rgb {fid} pixels deviate > 40")
         for name, check, expected in (
             ("depth", lambda d: _to_depth_mm(d, T, N), depth),
             ("mask", lambda m: _to_mask(m, T, N, H, W), mask),

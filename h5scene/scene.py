@@ -277,16 +277,13 @@ class H5Scene:
         if not (0 <= t < self.T and 0 <= n < self.N):
             raise IndexError(f"frame ({t},{n}) out of range (T={self.T}, N={self.N})")
 
-    def rgb_bytes(self, t=0, n=0):
-        """Raw stored image bytes for frame (t, n)."""
+    def rgb(self, t=0, n=0):
+        """Frame (t, n) decoded: (H, W, 3) uint8 RGB. (No bytes-level reader:
+        the stored jpg is an implementation detail — decode via cv2 only.)"""
         self._t(t, n)
         if not self.has("rgb"):
             raise KeyError("no rgb frames")
-        return self._h["rgb"][f"{t}_{n}"][:].tobytes()
-
-    def rgb(self, t=0, n=0):
-        """Frame (t, n) decoded: (H, W, 3) uint8 RGB."""
-        img = cv2.imdecode(np.frombuffer(self.rgb_bytes(t, n), np.uint8), cv2.IMREAD_COLOR)
+        img = cv2.imdecode(self._h["rgb"][f"{t}_{n}"][:], cv2.IMREAD_COLOR)
         if img is None:
             raise ValueError(f"rgb frame ({t},{n}) is not decodable")
         return img
