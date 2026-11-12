@@ -23,7 +23,7 @@ def _cam(path, T, H, W, seed, scene="s", depth_hw=None):
         cam.set_rgb(b)
         hh, ww = depth_hw if depth_hw is not None else (H, W)
         d = np.broadcast_to((1.0 + np.arange(T) / 10.0)[:, None, None], (T, hh, ww))
-        cam.set_depth(d.astype(np.float32).copy())
+        cam.set_depth_meters(d.astype(np.float32).copy())
         cam.set_meta(dataset="syn", scene=scene, seq=f"q{seed}")
     return path
 
@@ -37,11 +37,11 @@ def test_rig_per_frame_not_frame0(tmp_path):
     b = str(tmp_path / "b.h5")                      # the smaller camera: distinct depth per frame
     with H5Cam(b, T, 32, 96) as c:
         c.set_rgb([encode_rgb(np.full((32, 96, 3), 9, np.uint8))] * T)
-        c.set_depth(np.stack([np.full((32, 96), m) for m in (1.0, 2.0, 3.0)]))
+        c.set_depth_meters(np.stack([np.full((32, 96), m) for m in (1.0, 2.0, 3.0)]))
         c.set_meta(dataset="syn", scene="s", seq="qb")
     out = str(tmp_path / "rig.h5")
     with H5CamRig(out, [a, b]) as rig:
-        got = [int(rig.depth(t, 1)[0, 0]) for t in range(T)]
+        got = [int(rig.depth_mm(t, 1)[0, 0]) for t in range(T)]
     assert got == [1000, 2000, 3000], f"per-frame VDS read wrong frames: {got}"
 
 
@@ -139,15 +139,15 @@ def test_depth_boundary_65_535m_is_invalid_both_ways(tmp_path):
     """OCR: a depth of exactly 65.535 m (the max representable) must be stored
     as the invalid sentinel (0), not as 65535 which reads back as invalid —
     write and read now agree: 65535 is never a valid depth."""
-    from h5scene.codecs import to_mm
-    assert to_mm(np.array([[65.535]]), 1)[0, 0] == 0       # >= max -> 0 (invalid)
-    assert to_mm(np.array([[65.534]]), 1)[0, 0] == 65534  # just under: stored
+    from h5scene.codecs import to_meters_mm, to_mm
+    assert to_meters_mm(np.array([[65.535]]), 1)[0, 0] == 0       # >= max -> 0 (invalid)
+    assert to_meters_mm(np.array([[65.534]]), 1)[0, 0] == 65534  # just under: stored
     assert to_mm(np.array([[65535]], np.int32), 1)[0, 0] == 0  # int mm >= max
     # round trip: the sentinel is read back as invalid (cam H=W=2, T=1)
     with H5Cam(str(tmp_path / "c.h5"), 1, 2, 2) as cam:
-        cam.set_depth(np.array([[[65.535, 0.0], [0.0, 65.534]]], np.float32))
+        cam.set_depth_meters(np.array([[[65.535, 0.0], [0.0, 65.534]]], np.float32))
     with H5Cam(str(tmp_path / "c.h5")) as cam:
-        d = cam.depth(0, meters=True)
+        d = cam.depth_meters(0)
         assert d[0, 0] == 0.0 and d[1, 1] == 65.534      # 65.535 -> invalid 0
         assert not cam.depth_mask(0)[0, 0] and cam.depth_mask(0)[1, 1]
 
@@ -249,21 +249,24 @@ def test_set_meta_mixing_forms_is_an_error(tmp_path):
         assert cam.meta("scene") is None
 
 
-def test_conf_uint8_scaled_by_dtype_max(tmp_path):
-    """#41: an unsigned-integer confidence is scaled by its dtype max
-    (uint8 0-255, uint16 0-65535) — not clipped to 0/1 like uint8 used to."""
+def test_conf_rejects_integers_and_out_of_range(tmp_path):
+    """#41 closed: an integer confidence is never a 0-1 value — it is
+    REJECTED (TypeError), not silently scaled/clipped; the writer takes
+    0-1 floats only (set_depth_conf_01)."""
     from h5scene.codecs import to_conf
-    got = to_conf(np.array([[0, 128, 200, 255]], np.uint8), 1)[0]
-    assert np.allclose(got, [0.0, 128 / 255, 200 / 255, 1.0], atol=1e-3)
-    got16 = to_conf(np.array([[0, 32767, 65535]], np.uint16), 1)[0]
-    assert np.allclose(got16, [0.0, 32767 / 65535, 1.0], atol=1e-3)
+    with pytest.raises(TypeError, match="float 0-1"):
+        to_conf(np.array([[0, 128, 200, 255]], np.uint8), 1)
+    with pytest.raises(ValueError, match="must be 0-1"):
+        to_conf(np.array([[0.5, 1.5]], np.float32), 1)
     # round trip through the file
     with H5Cam(str(tmp_path / "c.h5"), 1, 1, 4) as cam:
-        cam.set_depth(np.array([[[1.0, 1.0, 1.0, 1.0]]], np.float32))
-        cam.set_depth_conf(np.array([[0, 128, 200, 255]], np.uint8))
+        cam.set_depth_meters(np.array([[[1.0, 1.0, 1.0, 1.0]]], np.float32))
+        cam.set_depth_conf_01(np.array([[0.0, 0.5, 1.0, 1.0]]))
+        with pytest.raises(TypeError, match="float 0-1"):
+            cam.set_depth_conf_01(np.array([[0, 128, 200, 255]], np.uint8))
     with H5Cam(str(tmp_path / "c.h5")) as cam:
         c = cam.depth_conf(0)
-        assert abs(float(c[0, 1]) - 128 / 255) < 1e-3 and float(c[0, 3]) == 1.0
+        assert abs(float(c[0, 1]) - 0.5) < 1e-3 and float(c[0, 2]) == 1.0
         assert not cam.depth_mask(0)[0, 0] and cam.depth_mask(0)[0, 1]
 
 
@@ -286,7 +289,7 @@ def test_rig_survives_cp_and_moves_with_cameras(tmp_path):
     os.utime(moved / "a.h5")                         # force a different mtime
     with H5CamRig(str(moved / "rig.h5")) as rig:
         assert rig.shape == (3, 2, 32, 64)
-        assert int(rig.depth(2, 0)[0, 0]) == 1200   # VDS reads the real data
+        assert int(rig.depth_mm(2, 0)[0, 0]) == 1200   # VDS reads the real data
     # a rewritten camera (different T -> different THW content) must be caught
     with H5Cam(str(moved / "b.h5"), 5, 32, 64) as c:
         c.set_rgb([encode_rgb(np.zeros((32, 64, 3), np.uint8))] * 5)

@@ -53,7 +53,7 @@ def probe(path):
         sizes, ks = [], []
         if "legacy" in out and out["legacy"]:
             for (t, n) in probed:
-                b = h["rgb"][f"{t}_{n}" if not "_" in f"{t}_{n}" else f"{t}_{n}"][:]
+                b = h["img"][f"{t}_{n}" if not "_" in f"{t}_{n}" else f"{t}_{n}"][:]
                 img = cv2.imdecode(np.frombuffer(b, np.uint8), cv2.IMREAD_COLOR)
                 sizes.append(img.shape[:2] if img is not None else None)
             if "K" in h:
@@ -61,7 +61,7 @@ def probe(path):
                     ks.append(h["K"][t, n][:].copy())
         else:
             for n in range(N):
-                img = cv2.imdecode(np.frombuffer(h["rgb"][f"0_{n}"][:], np.uint8),
+                img = cv2.imdecode(np.frombuffer(h["img"][f"0_{n}"][:], np.uint8),
                                    cv2.IMREAD_COLOR)
                 sizes.append(img.shape[:2] if img is not None else None)
             if "K" in h:

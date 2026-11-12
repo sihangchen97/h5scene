@@ -26,11 +26,11 @@ def test_round_trip(tmp_path):
     with H5Cam(out, T, H, W, is_metric=True) as cam:
         assert cam.shape == (T, H, W) and cam.is_metric
         cam.set_rgb(rgb_arr)                    # -> jpg q95
-        cam.set_depth(depth_m)
-        cam.set_depth_conf(conf)
+        cam.set_depth_meters(depth_m)
+        cam.set_depth_conf_01(conf)
         cam.set_mask(np.ones((T, H, W), bool))
         cam.set_K(np.array([[300., 0., W / 2], [0., 250., H / 2], [0., 0., 1.]], np.float32))
-        cam.set_pose(np.eye(4, dtype=np.float32))
+        cam.set_pose_c2w(np.eye(4, dtype=np.float32))
         cam.set_meta(dataset="syn", scene="s", seq="q1", suffix="0",
                      tags={"data_type": "synthetic"})
 
@@ -40,18 +40,20 @@ def test_round_trip(tmp_path):
         assert got.shape == (H, W, 3) and got.dtype == np.uint8
         assert np.abs(got.astype(int) - rgb_arr[0].astype(int)).max() <= 40   # jpg q95 on smooth
         with h5py.File(out) as h:
-            b = h["rgb"]["0"][:]               # stored jpg, not an array
+            b = h["img"]["0"][:]               # stored jpg, not an array
             dec = cv2.imdecode(np.frombuffer(b, np.uint8), cv2.IMREAD_COLOR)
             assert isinstance(dec, np.ndarray) and dec.shape == (H, W, 3)
-        mm = cam.depth(0)
+        mm = cam.depth_mm(0)
         assert mm.shape == (H, W) and mm.dtype == np.uint16
         assert mm[0, 0] == 0 and (mm[1] == 1500).all()
-        m = cam.depth(0, meters=True)
+        m = cam.depth_meters(0)
         assert m.dtype == np.float32 and np.isclose(m[5, 5], mm[5, 5] / 1000.0)
+        # BGR reader: a channel-reversed copy of rgb(t) (exact — both decoded)
+        assert (cam.bgr(0) == got[:, :, ::-1]).all()
         c = cam.depth_conf(0)
         assert c.dtype == np.float32 and 0.0 <= c.min() and c.max() <= 1.0
         assert cam.mask(1).all()
-        assert cam.K(0).shape == (3, 3) and cam.pose(1).shape == (4, 4)
+        assert cam.K(0).shape == (3, 3) and cam.pose_c2w(1).shape == (4, 4)
         dm = cam.depth_mask(0)
         assert dm.dtype == bool and dm.shape == (H, W) and not dm[0, 0] and dm.any()
         # meta
@@ -65,12 +67,12 @@ def test_depth_stored_smaller_aspect(tmp_path):
     T, H, W = 2, 8, 16
     out = str(tmp_path / "cam.h5")
     with H5Cam(out, T, H, W) as cam:
-        cam.set_depth(np.full((T, 4, 8), 1000.0, np.uint16))     # (h,w)=(4,8), ratio matches
-        cam.set_depth_conf(np.ones((T, 4, 8), np.float32))
+        cam.set_depth_mm(np.full((T, 4, 8), 1000.0, np.uint16))     # (h,w)=(4,8), ratio matches
+        cam.set_depth_conf_01(np.ones((T, 4, 8), np.float32))
     with h5py.File(out) as h:
         assert h["depth"].shape == (T, 4, 8) and h["depth_conf"].shape == (T, 4, 8)
     with H5Cam(out) as cam:
-        d = cam.depth(0)
+        d = cam.depth_mm(0)
         assert d.shape == (H, W) and (d == 1000).all()          # resized back
         assert cam.depth_mask(0).all()
 
@@ -78,13 +80,13 @@ def test_depth_stored_smaller_aspect(tmp_path):
 def test_depth_conf_must_match_depth_hw(tmp_path):
     out = str(tmp_path / "cam.h5")
     with H5Cam(out, 2, 8, 16) as cam:
-        cam.set_depth(np.full((2, 8, 16), 1000.0, np.uint16))
+        cam.set_depth_mm(np.full((2, 8, 16), 1000.0, np.uint16))
         with pytest.raises(ValueError, match="!= depth size"):
-            cam.set_depth_conf(np.ones((2, 4, 8), np.float32))     # (h,w) != depth's (h,w)
+            cam.set_depth_conf_01(np.ones((2, 4, 8), np.float32))     # (h,w) != depth's (h,w)
     cam = H5Cam(out)
     try:
         with pytest.raises(ValueError, match="aspect ratio"):
-            cam.set_depth(np.full((2, 3, 16), 1000.0, np.uint16))
+            cam.set_depth_mm(np.full((2, 3, 16), 1000.0, np.uint16))
     finally:
         cam.close()
 
@@ -105,8 +107,8 @@ def test_del_section(tmp_path):
     """#43: a section can be deleted (rgb: all frames; depth/mask/…: the
     dataset), depth_conf must go first, idempotent, unknown name rejected."""
     with H5Cam(str(tmp_path / "c.h5"), 2, 4, 6) as cam:
-        cam.set_depth(np.ones((2, 4, 6), np.float32))
-        cam.set_depth_conf(np.ones((2, 4, 6), np.float32))
+        cam.set_depth_meters(np.ones((2, 4, 6), np.float32))
+        cam.set_depth_conf_01(np.ones((2, 4, 6), np.float32))
         cam.set_mask(np.ones(2, np.bool_))
     with H5Cam.open(str(tmp_path / "c.h5"), "r+") as cam:
         assert cam.has("depth") and cam.has("depth_conf")
@@ -119,7 +121,7 @@ def test_del_section(tmp_path):
         cam.del_section("mask")
         assert not cam.has("mask")
         assert cam.del_section("mask") is cam          # idempotent
-        assert cam.del_section("rgb") is cam          # absent rgb: fine
+        assert cam.del_section("img") is cam          # absent img: fine
         with pytest.raises(ValueError, match="unknown section"):
             cam.del_section("nope")
 
@@ -129,6 +131,35 @@ def test_is_metric_defaults_false(tmp_path):
         cam.set_rgb([cv2.imencode(".jpg", np.zeros((4, 4, 3), np.uint8))[1].tobytes()] * 2)
     with H5Cam(str(tmp_path / "c.h5")) as cam:
         assert cam.is_metric is False
+
+
+def test_set_bgr_and_unit_guards(tmp_path):
+    """The unit/range guards: a float into set_depth_mm and an integer into
+    set_depth_meters / set_depth_conf_01 are rejected (TypeError), and
+    set_bgr stores a BGR array as an RGB frame (the red/green swap survives
+    a round trip)."""
+    T, H, W = 2, 8, 16
+    out = str(tmp_path / "cam.h5")
+    bgr = np.zeros((T, H, W, 3), np.uint8)
+    bgr[:, :, :, 0] = 255                              # BGR channel 0 (blue) full
+    with H5Cam(out, T, H, W) as cam:
+        cam.set_bgr(bgr)
+        with pytest.raises(TypeError, match="set_depth_meters"):
+            cam.set_depth_mm(np.ones((T, H, W), np.float32))
+        with pytest.raises(TypeError, match="set_depth_mm"):
+            cam.set_depth_meters(np.ones((T, H, W), np.uint16))
+        with pytest.raises(TypeError, match="float 0-1"):
+            cam.set_depth_conf_01(np.ones((T, H, W), np.uint8))
+    with H5Cam(out) as cam:
+        got = cam.rgb(0)
+        assert got[:, :, 2].min() >= 250 and got[:, :, 0].max() <= 5      # blue -> RGB channel 2 (jpg q95)
+        b = cam.bgr(0)
+        assert b[:, :, 0].min() >= 250 and b[:, :, 2].max() <= 5          # BGR back (exact vs rgb)
+        assert (b == got[:, :, ::-1]).all()
+    # set_bgr takes arrays only (bytes / paths are ambiguous colour-order)
+    with H5Cam.create(out, 2, 8, 16) as cam:
+        with pytest.raises(TypeError, match="uint8 BGR array"):
+            cam.set_bgr([b"\xff" * 10] * 2)
 
 
 def test_meta_unknown_key_rejected(tmp_path):

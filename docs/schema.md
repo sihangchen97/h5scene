@@ -26,15 +26,14 @@
   THW         int64 (3,) = (T, H, W)        必有
   is_metric   bool                        必有(构造默认 False)
   # ---- sections ----
-  /rgb/{t}    uint8 1-D 图像字节 jpg q<=95   可空组;有则 key 必须 0..T-1 完整
+  /img/{t}    uint8 1-D 图像字节 jpg q<=95   可空组;有则 key 必须 0..T-1 完整
   /depth      uint16 (T, h, w) mm;0 与 65535 双哨兵;gzip4 + shuffle;
               h<=H w<=W 且 H/W 比例一致;读回 resize 回 (H,W)          [可选]
   /mask       bool (T, H, W);1 = valid,gzip4;整帧 padding 可 (T,) 广播  [可选]
   /K          f32 (T, 3,3) raw;(3,3) 输入广播                       [可选]
   /T          f32 (T, 4,4) c2w raw;(4,4) 输入广播                   [可选]
   /depth_conf f16 (T, h, w) 0-1,gzip4,与 /depth 同 (h, w)           [可选]
-              # 输入 0-1 float,或无符号整数按 dtype max 缩放(uint8 0-255 /
-              # uint16 0-65535),与"整数深度 = mm"同风格
+              # 输入只收 0-1 float(set_depth_conf_01,整型拒绝)
   # ---- /meta(数据集侧,全部可选;缺失不写键)----
   /meta/dataset        str 顶层数据集名(定位键 1)
   /meta/scene          str 场景(定位键 2)
@@ -48,7 +47,7 @@
 
 - 定位语义:`(dataset, scene[, seq])` 相同的多个 h5 = 同一 scene 的多视角相机,
   可用 `H5CamRig` 合并;`suffix` 标变体。
-- open 时校验:`THW` 必有;rgb key 0..T-1 完整;各 section 轴 0 = T、
+- open 时校验:`THW` 必有;img key 0..T-1 完整;各 section 轴 0 = T、
   K/T 帧形 (3,3)/(4,4)、mask 全尺寸 (H,W)、depth/depth_conf 比例一致
   且两者 (h,w) 相同。
 - `depth_mask(t, conf_min=…)` 为派生(不存储)。
@@ -65,8 +64,8 @@
   cam_hw     int64 (N, 2) 每相机原生 (H, W)     必有
   cam_fp     int64 (N, 4) = (T, H, W, size)  内容指纹;open 时读相机的 THW
                     真比 + size 比;旧文件 (N,5) 带 mtime_ns 的行仍按旧逻辑校验  必有
-  # ---- sections(全部零字节;rgb 走链接,其余走 VDS)----
-  /rgb/{t}_{n}   ExternalLink → 相机 n 的 /rgb/{t}(jpg 变长不能 VDS);
+  # ---- sections(全部零字节;img 走链接,其余走 VDS)----
+  /img/{t}_{n}   ExternalLink → 相机 n 的 /img/{t}(jpg 变长不能 VDS);
                  rgb(t, n) 按相机 n 原生 (H, W) 解码
   /depth         VDS uint16 (T, N, Hmax, Wmax),fillvalue 0
   /mask          VDS bool   (T, N, Hmax, Wmax),fillvalue False
@@ -85,7 +84,7 @@
 
 - build 校验(全在写文件前;输出目录自动建,write-temp-then-rename,
   失败不碰已有输出):T 一致、is_metric 一致、dataset 一致、scene 一致、
-  rgb 全有或全无、section 集合一致、rgb 每帧尺寸 == 声明 (H,W)、
+  img 全有或全无、section 集合一致、img 每帧尺寸 == 声明 (H,W)、
   depth/depth_conf 必须存相机原生 (H,W)(下采样深度拒绝,VDS 不能上采样)、
   H 或 W 全相机相同(另一边取 max,左上对齐;两边都不同拒绝)、
   **输出路径不得是任一相机**(否则会覆盖相机数据)。

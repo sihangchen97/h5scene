@@ -5,7 +5,7 @@ Wmax) — REFERENCES only, nothing copied into the rig file (verified
 - STRICT build checks (all run BEFORE any file is written): same T, same
   is_metric, SAME dataset and scene across all cameras (the rig merges the
   cameras' seqs into ONE time axis — it has no seq of its own), same section
-  set (rgb in ALL or in NONE), rgb per-frame size == the declared (H, W)
+  set (img in ALL or in NONE), img per-frame size == the declared (H, W)
   (checked from the jpg SOF header, no full decode), depth/depth_conf stored
   at the camera's NATIVE (H, W) (downsampled depth is rejected — it cannot be
   upscaled through a VDS block), and H or W identical across ALL cameras
@@ -13,7 +13,7 @@ Wmax) — REFERENCES only, nothing copied into the rig file (verified
   file written).
 - build is write-temp-then-rename: a failed build never touches an existing
   output file (and the temp file is removed).
-- /rgb: ExternalLinks to each camera's own /rgb/{t} — 0 bytes in the rig
+- /img: ExternalLinks to each camera's own /img/{t} — 0 bytes in the rig
   file, no copy, no re-encode; rgb(t, n) therefore decodes at camera n's
   NATIVE (H, W), not the common (Hmax, Wmax).
 - /depth /mask /K /T /depth_conf: VIRTUAL datasets referencing the camera
@@ -31,7 +31,7 @@ Wmax) — REFERENCES only, nothing copied into the rig file (verified
   fingerprint, because a missing/renamed/rewritten source makes VDS reads
   SILENTLY return the fillvalue (and ExternalLinks raise KeyError) instead
   of erroring clearly.
-- the result is also a plain H5Base file (attrs.TNHW, /rgb t_n keys, /meta).
+- the result is also a plain H5Base file (attrs.TNHW, /img t_n keys, /meta).
 """
 import os
 import os.path as osp
@@ -147,7 +147,7 @@ class H5CamRig(H5Base):
 
     @property
     def sections(self):
-        return {n for n in ("rgb", *SECTIONS) if self.has(n)}
+        return {n for n in ("img", *SECTIONS) if self.has(n)}
 
     def __repr__(self):
         return (f"<{type(self).__name__} {self.path} shape={self.shape} "
@@ -185,17 +185,26 @@ class H5CamRig(H5Base):
 
     def rgb(self, t=0, n=0):
         """Frame (t, n) decoded: camera n's NATIVE (H, W, 3) uint8 RGB (the
-        /rgb entry is an ExternalLink to that camera's /rgb/{t})."""
+        /img entry is an ExternalLink to that camera's /img/{t})."""
         self._t(t, n)
-        if not self.has("rgb"):
-            raise KeyError("no rgb frames")
-        return decode_rgb(self._h["rgb"][f"{t}_{n}"][:].tobytes())
+        if not self.has("img"):
+            raise KeyError("no img frames")
+        return decode_rgb(self._h["img"][f"{t}_{n}"][:].tobytes())
 
-    def depth(self, t=0, n=0, meters=False):
-        """Frame (t, n) depth: (Hmax, Wmax) uint16 mm (default) or float32
-        meters; pad rows/cols (the VDS fillvalue region) read back as 0."""
-        f = self._f("depth", t, n)
-        return meters_frame(f, self.H, self.W) if meters else mm_frame(f, self.H, self.W)
+    def bgr(self, t=0, n=0):
+        """Frame (t, n) decoded as camera n's NATIVE (H, W, 3) uint8 BGR (a
+        channel-reversed copy of rgb(t, n) — for direct cv2 use)."""
+        return self.rgb(t, n)[:, :, ::-1].copy()
+
+    def depth_mm(self, t=0, n=0):
+        """Frame (t, n) depth in MM: (Hmax, Wmax) uint16; pad rows/cols (the
+        VDS fillvalue region) read back as 0."""
+        return mm_frame(self._f("depth", t, n), self.H, self.W)
+
+    def depth_meters(self, t=0, n=0):
+        """Frame (t, n) depth in METERS: (Hmax, Wmax) float32; pad reads back
+        0.0."""
+        return meters_frame(self._f("depth", t, n), self.H, self.W)
 
     def depth_conf(self, t=0, n=0):
         """Frame (t, n) confidence: (Hmax, Wmax) f32 0-1; pad reads back 0.0."""
@@ -209,7 +218,8 @@ class H5CamRig(H5Base):
     def K(self, t=0, n=0):
         return self._f("K", t, n)
 
-    def pose(self, t=0, n=0):
+    def pose_c2w(self, t=0, n=0):
+        """Frame (t, n) c2w pose: (4, 4) float32 camera-to-world."""
         return self._f("T", t, n)
 
     def depth_mask(self, t=0, n=0, conf_min=None):
@@ -310,9 +320,9 @@ class H5CamRig(H5Base):
             raise ValueError(f"rig needs H or W identical across cameras; "
                              f"got H={sorted(hs)} W={sorted(ws)}")
         H, W, N = max(hs), max(ws), len(cams)
-        has_rgb = [c.has("rgb") for c in cams]
+        has_rgb = [c.has("img") for c in cams]
         if any(has_rgb) and not all(has_rgb):
-            raise ValueError(f"rgb must be present in ALL cameras or in NONE "
+            raise ValueError(f"img must be present in ALL cameras or in NONE "
                              f"(got {has_rgb})")
         secs = [tuple(n for n in SECTIONS if n in c._h) for c in cams]
         if len(set(secs)) != 1:
@@ -330,12 +340,12 @@ class H5CamRig(H5Base):
                                          f"upscale downsampled depth")
             if has_rgb[n]:                        # size check from the SOF header
                 for t in range(c.T):
-                    b = c._h["rgb"][f"{t}"][:].tobytes()
+                    b = c._h["img"][f"{t}"][:].tobytes()
                     hw = jpeg_hw(b)
                     if hw is None:
                         hw = decode_rgb(b).shape[:2]
                     if hw != (c.H, c.W):
-                        raise ValueError(f"cam {n} rgb frame {t} size {hw} "
+                        raise ValueError(f"cam {n} img frame {t} size {hw} "
                                          f"!= declared ({c.H},{c.W})")
             dhw.append((c.H, c.W))
         # shared meta: inherited only when EVERY camera agrees (no None mixed in)
@@ -366,14 +376,14 @@ class H5CamRig(H5Base):
             st = os.stat(p)
             fps.append((T, hh, ww, st.st_size))    # (T, H, W, size): content
         rig.set_attr("cam_fp", np.array(fps, np.int64))
-        # /rgb: nothing stored — each (t, n) is an ExternalLink to the
-        # camera's own /rgb/{t} (variable-length jpg cannot be a VDS).
+        # /img: nothing stored — each (t, n) is an ExternalLink to the
+        # camera's own /img/{t} (variable-length jpg cannot be a VDS).
         # rgb(t, n) decodes at camera n's NATIVE (H, W).
         if has_rgb:
-            rg = h.create_group("rgb")
+            rg = h.create_group("img")
             for n, r in enumerate(relp):
                 for t in range(T):
-                    rg[f"{t}_{n}"] = h5py.ExternalLink(r, f"/rgb/{t}")
+                    rg[f"{t}_{n}"] = h5py.ExternalLink(r, f"/img/{t}")
         # fixed-shape sections: VDS referencing the cameras
         for name in secs:
             s = SECTIONS[name]

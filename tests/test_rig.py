@@ -2,7 +2,7 @@
 H5CamRig is a references-only file (0 bytes of data on disk): the fixed-shape
 sections (/depth /mask /K /T /depth_conf) are HDF5 VIRTUAL DATASETS
 referencing the camera files (compressed source mapped directly, pad via
-fillvalue) and /rgb/{t}_{n} are ExternalLinks to each camera's /rgb/{t}
+fillvalue) and /img/{t}_{n} are ExternalLinks to each camera's /img/{t}
 (jpg bytes, never re-encoded; rgb(t, n) decodes at the camera's native size).
 
 Covers: mixed-H merge (one axis identical, other = max + pad), the strict
@@ -34,7 +34,7 @@ def _mk_cam(path, T, H, W, seed, has_depth=True):
             b.append(cv2.imencode(".jpg", img, [int(cv2.IMWRITE_JPEG_QUALITY), 95])[1].tobytes())
         cam.set_rgb(b)
         if has_depth:
-            cam.set_depth(np.full((T, H, W), 1.0 + t / 100.0, np.float32))
+            cam.set_depth_meters(np.full((T, H, W), 1.0 + t / 100.0, np.float32))
         cam.set_meta(dataset="syn", scene="s", seq=f"q{seed}")   # seqs differ -> the rig merges them
     finally:
         cam.close()
@@ -42,7 +42,7 @@ def _mk_cam(path, T, H, W, seed, has_depth=True):
 
 def test_rig_mixed_hw(tmp_path):
     """3 cameras, same T, W identical, DIFFERENT H -> (T, 3, Hmax, W).
-    /rgb is an ExternalLink -> each cam read at its NATIVE (h, w) (nothing
+    /img is an ExternalLink -> each cam read at its NATIVE (h, w) (nothing
     copied/stored, no re-encode); /depth /mask are VDS -> padded to (Hmax, W)
     top-left via fillvalue, real region exact."""
     T = 4
@@ -61,7 +61,7 @@ def test_rig_mixed_hw(tmp_path):
             assert rgb.shape == (h, w, 3)
             assert (rgb > 0).all()                   # whole real region
             # depth / mask: VDS -> padded to (Hmax, W), top H rows real
-            d = rig.depth(0, n)
+            d = rig.depth_mm(0, n)
             assert d.shape == (H, W)
             assert (d[:h, :w] > 0).all()             # real mm > 0
             if h != H:
@@ -70,11 +70,11 @@ def test_rig_mixed_hw(tmp_path):
             assert dm[:h, :w].all()
             if h != H:
                 assert not dm[h:, :].any()
-        # /depth is a VDS (0 bytes); /rgb entries are ExternalLinks (no copy)
+        # /depth is a VDS (0 bytes); /img entries are ExternalLinks (no copy)
         with h5py.File(out, "r") as h:
             assert h["depth"].id.get_storage_size() == 0
-            for k in h["rgb"]:
-                assert isinstance(h.get(f"rgb/{k}", getlink=True), h5py.ExternalLink)
+            for k in h["img"]:
+                assert isinstance(h.get(f"img/{k}", getlink=True), h5py.ExternalLink)
             assert "cam_files" in h.attrs and "cam_hw" in h.attrs
             assert [tuple(x) for x in h.attrs["cam_hw"]] == sizes
     finally:
@@ -143,7 +143,7 @@ def test_rig_dataset_scene_mismatch_rejected(tmp_path):
 
 def test_rig_throughput(tmp_path):
     """Merge throughput at realistic scale (4 cams, T=20, 480x640, rgb+depth).
-    The depth section is a VDS -> 0 bytes; the cost is the /rgb physical copy
+    The depth section is a VDS -> 0 bytes; the cost is the /img physical copy
     (verbatim for the full-size cam, decode+pad+re-encode for the two smaller)."""
     T, W = 20, 640
     sizes = [(480, W), (480, W), (360, W), (240, W)]
@@ -156,7 +156,7 @@ def test_rig_throughput(tmp_path):
             cam.set_rgb([cv2.imencode(".jpg", rng.integers(0, 256, (H, W_, 3), np.uint8),
                                       [int(cv2.IMWRITE_JPEG_QUALITY), 95])[1].tobytes()
                          for _ in range(T)])
-            cam.set_depth(rng.uniform(0.1, 30.0, (T, H, W_)).astype(np.float32))
+            cam.set_depth_meters(rng.uniform(0.1, 30.0, (T, H, W_)).astype(np.float32))
         finally:
             cam.close()
         paths.append(p)

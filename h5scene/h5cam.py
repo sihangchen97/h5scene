@@ -1,6 +1,6 @@
 """H5Cam: single-camera sequence file — shape (T, H, W), attrs.THW.
 
-The scene layout with the N axis collapsed: /rgb/{t} (one dataset per frame),
+The scene layout with the N axis collapsed: /img/{t} (one dataset per frame),
 /depth (T, h, w), /mask (T, H, W), /K (T, 3, 3), /T (T, 4, 4),
 /depth_conf (T, h, w). Inherits the file handle + generic attr/meta accessors
 from H5Base; declares its OWN ATTR_KEYS / META_KEYS registries; and builds its
@@ -9,19 +9,20 @@ codecs/sections.py drives the writers and the filter policy). The (h, w) of
 depth / depth_conf may be < (H, W) (aspect ratio must match); reads resize
 back to (H, W).
 """
+import cv2
 import numpy as np
 
 from .codecs import (FRAME_SHAPE, SECTIONS, broadcast_matrix, conf_frame, depth_hw_ok,
                      depth_mask as _dm, filter_args, has,
                      is_metric as _is_metric, mm_frame, meters_frame,
-                     normalize_rgb, to_conf, to_mask, to_mm)
+                     normalize_rgb, to_conf, to_mask, to_mm, to_meters_mm)
 from .codecs.rgb import decode_rgb
 from .h5base import H5Base, MetaSpec
 
 class H5Cam(H5Base):
     """Single-camera sequence: attrs.THW = (T, H, W). create needs T, H, W
     (is_metric defaults False; a constructor failure removes the half-made
-    file); open requires attrs.THW and, when present, rgb keys 0..T-1 plus
+    file); open requires attrs.THW and, when present, img keys 0..T-1 plus
     consistent section shapes. set_*/read are (T, …) methods on this class."""
 
     ATTR_KEYS = {"THW": np.ndarray,        # int64 (3,) = (T, H, W)
@@ -46,7 +47,7 @@ class H5Cam(H5Base):
                 self.T, self.H, self.W = int(t), int(h), int(w)
                 self.set_attr("THW", np.array((self.T, self.H, self.W), np.int64))
                 self.set_attr("is_metric", bool(is_metric))
-                self._h.create_group("rgb")
+                self._h.create_group("img")
             except Exception:
                 self._abort_create()
                 raise
@@ -57,10 +58,10 @@ class H5Cam(H5Base):
                 if thw is None:
                     raise ValueError(f"{self.path}: not an H5Cam file (no attrs.THW)")
                 self.T, self.H, self.W = (int(x) for x in thw)
-                rg = self._h.get("rgb")
+                rg = self._h.get("img")
                 if rg is not None and len(rg) and (
                         len(rg) != self.T or any(f"{t}" not in rg for t in range(self.T))):
-                    raise ValueError("rgb keys != 0..T-1")
+                    raise ValueError("img keys != 0..T-1")
                 self._check_sections()
             except Exception:                   # corrupt file, bad THW, ...
                 self.close()
@@ -109,8 +110,8 @@ class H5Cam(H5Base):
 
     @property
     def sections(self):
-        """The present sections ('rgb' when any frames are stored)."""
-        return {n for n in ("rgb", *SECTIONS) if self.has(n)}
+        """The present sections ('img' when any frames are stored)."""
+        return {n for n in ("img", *SECTIONS) if self.has(n)}
 
     def __repr__(self):
         return (f"<{type(self).__name__} {self.path} shape={self.shape} "
@@ -172,29 +173,58 @@ class H5Cam(H5Base):
         if (h, w) != (self.H, self.W):
             raise ValueError(f"rgb size ({h},{w}) != scene ({self.H},{self.W})")
         # NOTE: replace is non-atomic (old frames deleted, then new ones
-        # written): a mid-loop failure leaves a partial rgb group. (OCR note; a
+        # written): a mid-loop failure leaves a partial img group. (OCR note; a
         # temp-name+rename swap would be a larger change than this call needs.)
-        rg = self._h.require_group("rgb")
+        rg = self._h.require_group("img")
         for k in list(rg):
             del rg[k]
         for t, b in enumerate(frames):
             rg.create_dataset(f"{t}", data=np.frombuffer(b, np.uint8))
 
-    def set_depth(self, depth):
-        """(T, H, W) float METERS (or integer MM; >= 65.535 m -> 0, the invalid
-        sentinel) / an
-        (H, W) frame (T=1); may be stored smaller (T, h, w) if the aspect
-        ratio H/W matches. gzip4 + shuffle (codecs.sections)."""
-        d = self._cam(depth)
+    def set_bgr(self, bgr):
+        """(T,H,W,3) uint8 BGR array / an (H,W,3) array (T=1); ARRAYS ONLY
+        (image bytes / file paths are rejected — the colour order on disk is
+        unknowable, use set_rgb). Channels reversed to RGB, then stored
+        through the set_rgb policy (jpg q<=95)."""
+        a = np.asarray(bgr)
+        if a.dtype != np.uint8:
+            raise TypeError(f"set_bgr wants a uint8 BGR array, got {a.dtype.name}")
+        if a.ndim == 3:
+            if a.shape[2] != 3:
+                raise ValueError(f"set_bgr (H,W,3) needs 3 channels, got {a.shape}")
+            self.set_rgb(np.ascontiguousarray(a[:, :, ::-1]))
+        elif a.ndim == 4:
+            if a.shape[3] != 3:
+                raise ValueError(f"set_bgr (T,H,W,3) needs 3 channels, got {a.shape}")
+            self.set_rgb(np.ascontiguousarray(a[:, :, :, ::-1]))
+        else:
+            raise ValueError(f"set_bgr must be a (T,H,W,3) or (H,W,3) uint8 BGR "
+                             f"array, got {a.shape}")
+
+    def set_depth_mm(self, depth_mm):
+        """(T, H, W) INTEGER mm / an (H, W) frame (T=1); MM ONLY (a float
+        means meters — use set_depth_meters). May be stored smaller (T, h, w)
+        if the aspect ratio H/W matches. gzip4 + shuffle (codecs.sections)."""
+        d = self._cam(depth_mm)
         d = to_mm(d, self.T)
         h, w = d.shape[1], d.shape[2]
         self._check_depth_hw("depth", h, w)
         self.write_section("depth", d, chunks=(1, h, w), **filter_args("depth"))
 
-    def set_depth_conf(self, conf):
-        """(T, H, W) 0-1 floats (or any unsigned integer 0..max — uint8 0-255,
-        uint16 0-65535; scaled by the dtype max) / an (H, W) frame (T=1);
-        same (h, w) as depth; f16 0-1, gzip4 (no shuffle: most values 1.0)."""
+    def set_depth_meters(self, depth_m):
+        """(T, H, W) float METERS / an (H, W) frame (T=1); METERS ONLY (an
+        integer means mm — use set_depth_mm). d >= 65.535 m -> 0 (the invalid
+        sentinel). Same (h, w) rules as set_depth_mm."""
+        d = self._cam(depth_m)
+        d = to_meters_mm(d, self.T)
+        h, w = d.shape[1], d.shape[2]
+        self._check_depth_hw("depth", h, w)
+        self.write_section("depth", d, chunks=(1, h, w), **filter_args("depth"))
+
+    def set_depth_conf_01(self, conf):
+        """(T, H, W) float 0-1 / an (H, W) frame (T=1); 0-1 FLOATS ONLY
+        (integers are rejected — they are never a 0-1 confidence). Same (h, w)
+        as depth; f16 0-1, gzip4 (no shuffle: most values 1.0)."""
         c = to_conf(self._cam(conf), self.T)
         self._check_depth_hw("depth_conf", c.shape[1], c.shape[2])
         self.write_section("depth_conf", c, chunks=(1, c.shape[1], c.shape[2]),
@@ -211,23 +241,33 @@ class H5Cam(H5Base):
         bigger with gzip for short sequences, break-even ~106 frames)."""
         self.write_section("K", broadcast_matrix(K, self.T, (3, 3)))
 
-    def set_pose(self, pose):
-        """(4,4) broadcast or (T, 4, 4) float c2w; stored raw (no gzip)."""
-        self.write_section("T", broadcast_matrix(pose, self.T, (4, 4)))
+    def set_pose_c2w(self, pose_c2w):
+        """(4,4) broadcast or (T, 4, 4) float camera-to-world (c2w) poses;
+        stored raw (no gzip)."""
+        self.write_section("T", broadcast_matrix(pose_c2w, self.T, (4, 4)))
 
     # ---- reads (T semantics; codecs/ owns the decoding policy) ----
     def rgb(self, t=0):
         """Frame t decoded: (H, W, 3) uint8 RGB (no bytes-level reader)."""
         self._t(t)
-        if not self.has("rgb"):
-            raise KeyError("no rgb frames")
-        return decode_rgb(self._h["rgb"][f"{t}"][:].tobytes())
+        if not self.has("img"):
+            raise KeyError("no img frames")
+        return decode_rgb(self._h["img"][f"{t}"][:].tobytes())
 
-    def depth(self, t=0, meters=False):
-        """Frame t depth: (H, W) uint16 mm (default) or float32 meters; a
-        (h, w) < (H, W) section is resized back (nearest, sentinels re-clipped)."""
-        f = self._f("depth", t)
-        return meters_frame(f, self.H, self.W) if meters else mm_frame(f, self.H, self.W)
+    def bgr(self, t=0):
+        """Frame t decoded as (H, W, 3) uint8 BGR (a channel-reversed copy of
+        rgb(t) — for direct cv2 use)."""
+        return self.rgb(t)[:, :, ::-1].copy()
+
+    def depth_mm(self, t=0):
+        """Frame t depth in MM: (H, W) uint16 (a (h, w) < (H, W) section is
+        resized back — nearest, sentinels re-clipped)."""
+        return mm_frame(self._f("depth", t), self.H, self.W)
+
+    def depth_meters(self, t=0):
+        """Frame t depth in METERS: (H, W) float32 (resized back like
+        depth_mm)."""
+        return meters_frame(self._f("depth", t), self.H, self.W)
 
     def depth_conf(self, t=0):
         """Frame t confidence: (H, W) f32 0-1 (resized back if stored smaller)."""
@@ -239,7 +279,8 @@ class H5Cam(H5Base):
     def K(self, t=0):
         return self._f("K", t)
 
-    def pose(self, t=0):
+    def pose_c2w(self, t=0):
+        """Frame t c2w pose: (4, 4) float32 camera-to-world."""
         return self._f("T", t)
 
     def depth_mask(self, t=0, conf_min=None):
@@ -278,18 +319,18 @@ class H5Cam(H5Base):
         return self._cam(a)
 
     def del_section(self, name):
-        """Delete a stored section (/rgb: all its frames; /depth, /mask, …: the
+        """Delete a stored section (/img: all its frames; /depth, /mask, …: the
         whole dataset). depth_conf must be deleted first (it must share depth's
         (h, w), so it is checked against the section being removed)."""
-        if name not in SECTIONS and name != "rgb":
+        if name not in SECTIONS and name != "img":
             raise ValueError(f"unknown section {name!r}; known: ("
-                             f"'rgb', {', '.join(repr(n) for n in SECTIONS)})")
+                             f"'img', {', '.join(repr(n) for n in SECTIONS)})")
         h = self._h
-        if name == "rgb":
-            rg = h.get("rgb")
+        if name == "img":
+            rg = h.get("img")
             if rg is None or len(rg) == 0:
                 return self
-            del h["rgb"]
+            del h["img"]
         else:
             if name == "depth" and "depth_conf" in h:
                 s, s2 = h["depth"].shape, h["depth_conf"].shape

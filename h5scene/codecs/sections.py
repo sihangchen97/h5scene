@@ -5,7 +5,7 @@ frame-2D-ness / resizability, and it drives:
   - H5CamRig's VDS build (dtype + fillvalue + frame2d)
   - has() (presence)
   - test_compression_policy (the pinned filter choices)
-The rgb section is NOT in this table — it is variable-length image BYTES
+The img section is NOT in this table — it is variable-length image BYTES
 (jpg q<=95), stored one dataset per frame, with its own policy in codecs/rgb.
 
 The per-section ENCODING (meters->mm, mask broadcast, K/T broadcast, conf
@@ -52,8 +52,8 @@ def has(h, name):
     legacy file with no /rgb or /meta group does not raise)."""
     m = h.get("meta")
     has_meta = m is not None
-    if name == "rgb":
-        return len(h.get("rgb") or {}) > 0
+    if name == "img":
+        return len(h.get("img") or {}) > 0
     if name in SECTIONS:
         return name in h
     if has_meta:

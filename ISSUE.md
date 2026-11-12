@@ -58,7 +58,7 @@
 38. ✅ Mixing the two `set_meta` forms (positional name AND keywords) raises instead of silently dropping the keywords. `test_set_meta_mixing_forms_is_an_error`.
 39. ✅ The fingerprint's (T, H, W) is now read from the CAMERA file's `attrs.THW` at open and compared (plus size); the stored `cam_fp` is `(T, H, W, size)` and the error names what actually changed. Legacy 5-column rows (with mtime) still verify.
 40. ✅ `cam_files` / the VDS sources / the ExternalLinks are stored RELATIVE to the rig file's directory (h5py resolves both the same way — verified empirically from two different CWDs), so a rig copied or moved together with its cameras opens fine (byte-identical content, new mtime); the fingerprint is content-based (THW + size), not mtime. `test_rig_survives_cp_and_moves_with_cameras`. A camera moved away or rewritten still raises `FileNotFoundError`/`ValueError`.
-41. ✅ `to_conf` scales every unsigned integer by its dtype max (uint8 0-255, uint16 0-65535), like integer depth is mm. `test_conf_uint8_scaled_by_dtype_max`.
+41. ✅ `set_depth_conf_01` now takes 0-1 floats ONLY (integers are rejected — they are never a 0-1 confidence, no more dtype-max scaling). `test_conf_rejects_integers_and_out_of_range` (supersedes `test_conf_uint8_scaled_by_dtype_max`).
 42. ✅ `H5CamRig.build` creates the output directory (like `H5Cam.create`). `test_rig_build_creates_output_dir`.
 
 ### Robustness / API
@@ -86,3 +86,32 @@
       - `broadcast_matrix` says "pose must be …" for K too.
       - The `__init__.py` layout docstring leaves out `attrs.cam_fp`.
       - The README usage still shows the constructor form `H5Cam("cam.h5", T, H, W)` instead of `H5Cam.create`, and has a stray `from h5scene import H5Base` inside the `with` block.
+
+## Changes: naming guards + /img rename (2026-11-14)
+
+API-breaking changes (old `.h5` files with the `/rgb` layout no longer open); unit/range
+mistakes now raise instead of being guessed:
+
+1. **`set_depth` → `set_depth_mm` (integer MM only) + `set_depth_meters` (float METERS only).**
+   The unit is fixed by the entry point, never inferred from the dtype: a float into
+   `set_depth_mm` and an integer into `set_depth_meters` raise `TypeError` pointing at
+   the other writer. Reads: `depth(t, meters=…)` → `depth_mm(t)` / `depth_meters(t)` (cam
+   and rig).
+2. **`set_depth_conf` → `set_depth_conf_01` (0-1 float only).** Integers raise `TypeError`
+   (closes #41 — no more silent dtype-max scaling), out-of-range floats raise `ValueError`.
+3. **`set_pose` → `set_pose_c2w` / `pose(t)` → `pose_c2w(t)`** (cam and rig). The STORED
+   convention is unchanged: camera-to-world (p_world = c2w @ p_cam needs one multiply,
+   and the rig's cross-camera transforms are `c2w_j @ inv(c2w_i)`).
+4. **`/rgb/{t}` → `/img/{t}`** (cam and rig, incl. the rig's ExternalLink targets and
+   `has("img")` / `sections` / `del_section("img")`); docs + tests + `probes/rig_scan.py`
+   updated. BREAKING for existing files.
+5. **BGR access for cv2 users:** `bgr(t)` / `bgr(t, n)` = `rgb(...)[:, :, ::-1].copy()`
+   (read side); `set_bgr` = uint8 BGR ARRAYS ONLY (no image bytes / paths — the colour
+   order on disk is unknowable), channels reversed then stored through the `set_rgb`
+   policy. Storage is still RGB-semantics jpg.
+6. **`codecs/depth.py`:** `to_mm` (integers only) / `to_meters_mm` (floats only)
+   replace the dtype-sniffing `to_mm`; `to_conf` (0-1 floats only).
+
+Tests: `test_set_bgr_and_unit_guards` (the guards + the red/green swap round trip),
+`test_conf_rejects_integers_and_out_of_range`, the existing round-trip tests updated to
+the new names and `/img`.

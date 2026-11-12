@@ -25,13 +25,13 @@ def _full_scene(tmp_path):
     out = str(tmp_path / "policy.h5")
     s = H5Cam(out, 2, H, W)
     s.set_rgb(rng.integers(0, 256, (2, H, W, 3)).astype(np.uint8))
-    s.set_depth(rng.integers(100, 3000, (2, H, W)).astype(np.uint16))
+    s.set_depth_mm(rng.integers(100, 3000, (2, H, W)).astype(np.uint16))
     m = np.ones((2, H, W), bool)
     m[:, -H // 4:, :] = False
     s.set_mask(m)
-    s.set_depth_conf(np.where(m, 1.0, 0.0).astype(np.float32))
+    s.set_depth_conf_01(np.where(m, 1.0, 0.0).astype(np.float32))
     s.set_K(np.array([[100.0, 0, W / 2], [0, 100.0, H / 2], [0, 0, 1]], np.float32))
-    s.set_pose(np.eye(4, dtype=np.float32))
+    s.set_pose_c2w(np.eye(4, dtype=np.float32))
     return s, out
 
 
@@ -100,7 +100,7 @@ def test_depth_size_beats_raw_and_png_budget(tmp_path):
     H_, W_ = d.shape
     out = str(tmp_path / "depth_only.h5")
     s = H5Cam(out, 1, H_, W_)
-    s.set_depth(d)
+    s.set_depth_mm(d)
     s.close()
     size = Path(out).stat().st_size
     raw = d.nbytes
@@ -119,7 +119,7 @@ def test_rgb_stored_jpg95_smaller_than_png_and_lossy(tmp_path):
     s = H5Cam(out, 1, h_, w_)
     s.set_rgb([img])
     s.close()
-    stored = h5py.File(out, "r")["rgb"]["0"][:]   # raw stored bytes
+    stored = h5py.File(out, "r")["img"]["0"][:]   # raw stored bytes
     png = cv2.imencode(".png", img)[1]
     assert len(stored) < 0.5 * len(png), (
         f"rgb no longer smaller than png: {len(stored)} vs {len(png)} B — "
