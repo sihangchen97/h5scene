@@ -30,7 +30,6 @@ def probe(path):
         if "TNHW" in h.attrs:
             T, N, H, W = (int(x) for x in h.attrs["TNHW"])
             out.update(T=T, N=N, legacy=False)
-            hw = {n: h["rgb"][f"0_{n}"][:].nbytes for n in range(N)}
         else:
             H, W = (int(h.attrs["H"]), int(h.attrs["W"]))
             nframes = int(h.attrs.get("nframes", 0))

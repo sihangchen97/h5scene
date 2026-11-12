@@ -52,7 +52,7 @@ from h5scene import H5Base, H5Cam, H5CamRig
 # single-camera sequence
 cam = H5Cam("cam.h5", T, H, W)     # create (overwrites); is_metric defaults False
 cam.set_rgb(rgb)                    # (T,H,W,3) uint8 / (H,W,3) (T=1) / (T,) image-bytes / paths
-cam.set_depth(depth_m)              # float METERS (or integer MM; >65.535 m -> 0);
+cam.set_depth(depth_m)              # float METERS (or integer MM; >=65.535 m -> 0);
                                     # may be stored at (h,w) < (H,W) if the aspect ratio matches
 cam.set_depth_conf(conf)            # same (h,w) as depth
 cam.set_mask(mask); cam.set_K(K); cam.set_pose(pose)

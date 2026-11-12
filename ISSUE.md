@@ -44,6 +44,11 @@
 
 **计数:✅ 32(全部 bug 1-9 + 文档 10-17 + 健壮 18-26 + 结构 #27 #28 #30 #31 #32 #34)/ ⏭️ 3(#29 reader mixin · #33 in-memory CamRig(做过后退回)· #35 测试布局)**
 
+## 追加:OCR 独立审计(18 条,2026-11-12 20:27 NZST)
+**✅ 修了 8 项(各带回归测试或 diff):rig build 的 cams 句柄泄漏(try/finally)· h5cam open 只捕 ValueError(改 Exception)· `_abort_create` close 无保护 + `__exit__` close 掩盖原异常 · to_mm 恰好 65.535 m 可写成 65535(→ 0,读写对哨兵达成一致)· normalize_rgb 空输入 `(None,None,())`(→ 明确报错)· encode_rgb 不查 imencode success · 死代码 ×3(rig 的 filter_args / h5cam 的 os / rig_scan 的 eager-load hw)· requires-python `>=3.10` 与 pillow13/skimage0.26 的 `>=3.11` 冲突 → `>=3.11`**
+**❌ 误报 3 项:`Image.NEAREST` ×2 称"pillow13 已删、critical 崩溃"——实测 pillow 13.0.0 下 `Image.NEAREST == 0` 仍在(smoke 一直跑通);h5cam 的 `filter_args` 称"未用"——实际 3 处 `filter_args("depth")` 在用**
+**⏭️ 有意不修:`set_rgb` 非原子替换(先删后写,中途失败留半组)——已加代码注记,重构成 temp-name+rename 超出本库体量;`normalize_rgb`/`to_mm` 的 T 参数未用(为与 mask/pose 的签名对称,帧数由 H5Cam 层校验)****
+
 ## 进度表说明(2026-11-13 review 前)
 
 Items marked **[verified]** were reproduced with a scratch script. Line numbers refer to the current `master`.

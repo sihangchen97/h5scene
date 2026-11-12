@@ -7,7 +7,7 @@ name = "h5scene"
 version = "0.1.0"
 description = "Per-scene HDF5 writers + file handles (H5Base / H5Cam / H5CamRig) with the unified (T, N, H, W) layout; the rig file is references only (ExternalLinks + VDS)."
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 dependencies = [
     "numpy>=1.24,<3",
     "opencv-python>=4.8,<5",

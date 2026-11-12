@@ -66,8 +66,11 @@ def jpeg_quality(data):
 # ---- encode / decode (the colour-order boundary) ----
 def encode_rgb(img, quality=JPG_QUALITY):
     """One RGB (H, W, 3) uint8 -> jpg bytes (cv2 encodes BGR internally)."""
-    return cv2.imencode(".jpg", cv2.cvtColor(img, cv2.COLOR_RGB2BGR),
-                        [int(cv2.IMWRITE_JPEG_QUALITY), quality])[1].tobytes()
+    ok, buf = cv2.imencode(".jpg", cv2.cvtColor(img, cv2.COLOR_RGB2BGR),
+                           [int(cv2.IMWRITE_JPEG_QUALITY), quality])
+    if not ok or buf is None:
+        raise ValueError(f"cv2.imencode failed for an image of shape {img.shape}")
+    return buf.tobytes()
 
 
 def decode_rgb(b):
@@ -109,7 +112,10 @@ def normalize_rgb(rgb, T, N):
     per-frame image-bytes sequence, or file paths (flat list: T frames N=1;
     (T,N) array: N cameras per frame) read from disk. Per-frame encoding
     policy: detected cv2/libjpeg quality <= 95 -> stored verbatim; quality >
-    95, another encoding, or unknown encoder -> re-encoded to jpg q95."""
+    95, another encoding, or unknown encoder -> re-encoded to jpg q95. An empty
+    frame sequence is a clear error (it would otherwise decode to (None, None))."""
+    if isinstance(rgb, (list, tuple)) and len(rgb) == 0:
+        raise ValueError("rgb is an empty frame sequence (no frames to store)")
     a = np.asarray(rgb)
     if isinstance(rgb, (str, os.PathLike)):
         a = a.reshape(1)
@@ -149,6 +155,8 @@ def normalize_rgb(rgb, T, N):
             T, N = a.shape
         else:
             raise ValueError(f"rgb bytes sequence must be flat (T,) or (T,N), got ndim={a.ndim}")
+    if not flat:
+        raise ValueError("rgb is an empty frame sequence (no frames to store)")
     H, W, out = None, None, []
     for i, b in enumerate(flat):
         img = decode_rgb(b)                       # RGB

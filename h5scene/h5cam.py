@@ -9,12 +9,10 @@ codecs/sections.py drives the writers and the filter policy). The (h, w) of
 depth / depth_conf may be < (H, W) (aspect ratio must match); reads resize
 back to (H, W).
 """
-import os
-
 import numpy as np
 
 from .codecs import (FRAME_SHAPE, SECTIONS, broadcast_matrix, conf_frame, depth_hw_ok,
-                     depth_mask as _dm, encode_rgb, filter_args, has,
+                     depth_mask as _dm, filter_args, has,
                      is_metric as _is_metric, mm_frame, meters_frame,
                      normalize_rgb, to_conf, to_mask, to_mm)
 from .codecs.rgb import decode_rgb
@@ -68,7 +66,7 @@ class H5Cam(H5Base):
                         len(rg) != self.T or any(f"{t}" not in rg for t in range(self.T))):
                     raise ValueError("rgb keys != 0..T-1")
                 self._check_sections()
-            except ValueError:
+            except Exception:                   # corrupt file, bad THW, ...
                 self.close()
                 raise
 
@@ -183,6 +181,9 @@ class H5Cam(H5Base):
             raise ValueError(f"rgb gives {len(frames)} frames but T={self.T}")
         if (h, w) != (self.H, self.W):
             raise ValueError(f"rgb size ({h},{w}) != scene ({self.H},{self.W})")
+        # NOTE: replace is non-atomic (old frames deleted, then new ones
+        # written): a mid-loop failure leaves a partial rgb group. (OCR note; a
+        # temp-name+rename swap would be a larger change than this call needs.)
         rg = self._h.require_group("rgb")
         for k in list(rg):
             del rg[k]
@@ -190,7 +191,8 @@ class H5Cam(H5Base):
             rg.create_dataset(f"{t}", data=np.frombuffer(b, np.uint8))
 
     def set_depth(self, depth):
-        """(T, H, W) float METERS (or integer MM; > 65.535 m -> 0) / an
+        """(T, H, W) float METERS (or integer MM; >= 65.535 m -> 0, the invalid
+        sentinel) / an
         (H, W) frame (T=1); may be stored smaller (T, h, w) if the aspect
         ratio H/W matches. gzip4 + shuffle (codecs.sections)."""
         d = self._cam(depth)

@@ -40,7 +40,7 @@ axis onto it — written "[N]" where the rig adds one axis):
               context; meta_json = source verbatim).
               The location identity: (dataset, scene[, seq]) shared by several
               h5 = the same scene's cameras; seq is per-camera (the rig has
-              none); suffix marks variants — see docs/meta_key_decisions.md
+              none); suffix marks variants — see docs/schema.md
       /meta/frame_indices  int64 (T,) source frame numbers        [optional]
       /meta/tags/*         utf-8 strings (data_type/dynamics/...)  [optional]
       attrs: is_metric bool (data-side)

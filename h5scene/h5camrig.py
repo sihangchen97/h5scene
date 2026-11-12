@@ -37,7 +37,7 @@ import h5py
 import numpy as np
 
 from .codecs import (FRAME_SHAPE, SECTIONS, conf_frame, depth_mask as _dm,
-                     decode_rgb, filter_args, has, is_metric as _is_metric,
+                     decode_rgb, has, is_metric as _is_metric,
                      jpeg_hw, mm_frame, meters_frame)
 from .h5base import H5Base
 from .h5cam import H5Cam
@@ -243,19 +243,22 @@ class H5CamRig(H5Base):
             for c in cams:
                 c.close()
             raise
-        # 2) write to a temp file, then rename into place
+        # 2) write to a temp file, then rename into place (the cameras are
+        # always released, even when this fails)
         tmp = f"{out_path}.tmp.{os.getpid()}"
         try:
-            self._write(tmp, absp, vals, meta, suffix)
-        except Exception:
             try:
-                os.remove(tmp)
-            except OSError:
-                pass
-            raise
-        os.replace(tmp, out_path)
-        for c in cams:
-            c.close()
+                self._write(tmp, absp, vals, meta, suffix)
+                os.replace(tmp, out_path)
+            finally:
+                try:
+                    if osp.exists(tmp):
+                        os.remove(tmp)
+                except OSError:
+                    pass
+        finally:
+            for c in cams:
+                c.close()
         self._h = h5py.File(out_path, "r")
 
     def _validate(self, cams):

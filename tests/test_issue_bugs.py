@@ -135,6 +135,34 @@ def test_frame_indices_length_enforced(tmp_path):
         assert cam.frame_indices is None
 
 
+def test_depth_boundary_65_535m_is_invalid_both_ways(tmp_path):
+    """OCR: a depth of exactly 65.535 m (the max representable) must be stored
+    as the invalid sentinel (0), not as 65535 which reads back as invalid —
+    write and read now agree: 65535 is never a valid depth."""
+    from h5scene.codecs import to_mm
+    assert to_mm(np.array([[65.535]]), 1)[0, 0] == 0       # >= max -> 0 (invalid)
+    assert to_mm(np.array([[65.534]]), 1)[0, 0] == 65534  # just under: stored
+    assert to_mm(np.array([[65535]], np.int32), 1)[0, 0] == 0  # int mm >= max
+    # round trip: the sentinel is read back as invalid (cam H=W=2, T=1)
+    with H5Cam(str(tmp_path / "c.h5"), 1, 2, 2) as cam:
+        cam.set_depth(np.array([[[65.535, 0.0], [0.0, 65.534]]], np.float32))
+    with H5Cam(str(tmp_path / "c.h5")) as cam:
+        d = cam.depth(0, meters=True)
+        assert d[0, 0] == 0.0 and d[1, 1] == 65.534      # 65.535 -> invalid 0
+        assert not cam.depth_mask(0)[0, 0] and cam.depth_mask(0)[1, 1]
+
+
+def test_empty_rgb_sequence_is_a_clear_error(tmp_path):
+    """OCR: an empty rgb input must fail with a clear error, not silently
+    return (None, None, ()) and crash far downstream."""
+    from h5scene.codecs import normalize_rgb
+    with pytest.raises(ValueError, match="empty"):
+        normalize_rgb([], 3, 1)
+    with H5Cam(str(tmp_path / "c.h5"), 3, 8, 8) as cam:
+        with pytest.raises(ValueError, match="empty"):
+            cam.set_rgb([])
+
+
 def test_h5cam_mode_in_t_slot_is_a_clear_error(tmp_path):
     """H5Cam(p, "r+") puts a mode string in the t (frame-count) slot — give a
     clear pointer to H5Cam.open() instead of the misleading create error."""

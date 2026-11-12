@@ -14,14 +14,16 @@ MM_MAX = 65535
 # ---- input -> stored (T, h, w) ----
 def to_mm(depth, T):
     """(T, h, w) float METERS (or integer MM) -> (T, h, w) uint16 mm.
-    d > 65.535 m -> 0 (invalid); never saturated to 65535."""
+    d >= 65.535 m -> 0 (invalid): 65535 is the invalid sentinel, so the max
+    representable depth can never survive a round trip as "valid" — write and
+    read agree on the sentinel (65535 is never a valid depth)."""
     a = np.asarray(depth)
     if a.dtype.kind in "iu":                       # integers are already mm
         mm = a.astype(np.float64)
     else:                                          # floats are meters
         mm = a.astype(np.float64) * 1000.0
     mm = np.rint(np.where(np.isfinite(mm), mm, 0.0))
-    mm = np.where(mm > MM_MAX, 0, mm)
+    mm = np.where(mm >= MM_MAX, 0, mm)             # round-trip: 65535 = invalid
     return np.clip(mm, 0, MM_MAX).astype(np.uint16)
 
 

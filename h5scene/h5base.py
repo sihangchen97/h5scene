@@ -112,12 +112,14 @@ class H5Base:
 
     def _abort_create(self):
         """Close the handle and remove a half-made file (create-mode only)."""
-        self.close()
-        if self._created:
-            try:
-                os.remove(self.path)
-            except OSError:
-                pass
+        try:
+            self.close()
+        finally:
+            if self._created:
+                try:
+                    os.remove(self.path)
+                except OSError:
+                    pass
 
     # ---- the handle ----
     @property
@@ -239,7 +241,11 @@ class H5Base:
         return self
 
     def __exit__(self, *exc):
-        self.close()
+        try:
+            self.close()
+        except Exception:
+            if exc[0] is None:
+                raise            # a fresh close error: surface it
 
     # ---- the one low-level dataset write ----
     def write_section(self, name, data, **kw):
