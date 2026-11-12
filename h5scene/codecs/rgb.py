@@ -88,21 +88,21 @@ def jpeg_hw(data):
     if len(b) < 4 or b[0] != 0xFF or b[1] != 0xD8:
         return None
     i = 2
-    while i + 8 <= len(b):
+    while i + 4 <= len(b):
         m = int(b[i]) * 256 + int(b[i + 1])
         if m == 0xFFDA:                                 # SOS: no SOF seen
             return None
-        ln = int(b[i + 2]) * 256 + int(b[i + 3])
-        if m in (0xFFC0, 0xFFC2, 0xFFC3, 0xFFC5, 0xFFC7, 0xFFC9, 0xFFCB, 0xFFCD):
-            # segment: len(2) precision(1) H(2) W(2) ncomp(1) — data at i+4
+        if m in (0xFFC0, 0xFFC1, 0xFFC2, 0xFFC3, 0xFFC4, 0xFFC5, 0xFFC6, 0xFFC7,
+                 0xFFC8, 0xFFC9, 0xFFCA, 0xFFCB, 0xFFCC, 0xFFCD, 0xFFCE, 0xFFCF):
+            # SOF segment: len(2) precision(1) H(2) W(2) ncomp(1) — at i+4..i+9
+            if i + 10 > len(b):                         # SOF present but truncated
+                return None
             return int(b[i + 5]) * 256 + int(b[i + 6]), int(b[i + 7]) * 256 + int(b[i + 8])
+        ln = int(b[i + 2]) * 256 + int(b[i + 3])
+        if ln < 4:                                      # malformed: skip the marker
+            return None
         i += 2 + ln
     return None
-
-
-def rgb_frame_hw(b):
-    """(H, W) of a stored image frame, decoded once."""
-    return decode_rgb(b).shape[:2]
 
 
 # ---- input normalization (array / image bytes / file paths) ----
@@ -159,13 +159,20 @@ def normalize_rgb(rgb, T, N):
         raise ValueError("rgb is an empty frame sequence (no frames to store)")
     H, W, out = None, None, []
     for i, b in enumerate(flat):
-        img = decode_rgb(b)                       # RGB
-        if H is not None and img.shape[:2] != (H, W):
-            raise ValueError(f"rgb frame {i} size {img.shape[:2]} != frame 0 size {(H, W)}")
-        H, W = img.shape[:2]
+        b = bytes(b)
         q = jpeg_quality(b)
         if q is not None and q <= JPG_QUALITY:
-            out.append(bytes(b))
-        else:
+            hw = jpeg_hw(b)                        # SOF header only, no decode
+            if hw is None:                         # not a jpeg at all: full decode
+                hw = decode_rgb(b).shape[:2]
+            if H is not None and hw != (H, W):
+                raise ValueError(f"rgb frame {i} size {hw} != frame 0 size {(H, W)}")
+            H, W = hw
+            out.append(b)                          # stored verbatim
+        else:                                      # re-encode: the only full decode
+            img = decode_rgb(b)                    # RGB
+            if H is not None and img.shape[:2] != (H, W):
+                raise ValueError(f"rgb frame {i} size {img.shape[:2]} != frame 0 size {(H, W)}")
+            H, W = img.shape[:2]
             out.append(encode_rgb(img))
     return H, W, tuple(out)

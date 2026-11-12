@@ -17,7 +17,9 @@ Three classes (H5Cam and H5CamRig both inherit H5Base):
   (checked on build; the rig has no seq of its own — it IS the merged time
   axis); H or W identical across cameras (the other = max, top-left aligned,
   pad covered by the VDS fillvalue). rgb(t, n) decodes at camera n's NATIVE
-  (H, W); the VDS sections at the common (Hmax, Wmax).
+  (H, W); the VDS sections at the common (Hmax, Wmax). attrs: TNHW, is_metric,
+  cam_files (relative to the rig file), cam_hw, cam_fp (per-camera content
+  fingerprint, verified on open).
 
 File layout (H5Cam = the scene layout with N collapsed; H5CamRig maps the N
 axis onto it — written "[N]" where the rig adds one axis):
@@ -45,8 +47,13 @@ axis onto it — written "[N]" where the rig adds one axis):
       attrs: is_metric bool (data-side)
              H5Cam:  THW = int64 (T, H, W)
              H5CamRig: TNHW = int64 (T, N, Hmax, Wmax),
-                       cam_files = str[] absolute source cam files,
-                       cam_hw = int64 (N, 2) per-camera (H, W)
+                       cam_files = str[] source cam files relative to the
+                       rig file's directory (the VDS/ExternalLinks resolve
+                       them the same way — a rig moved with its cameras works),
+                       cam_hw = int64 (N, 2) per-camera (H, W),
+                       cam_fp = int64 (N, 4) per-camera (T, H, W, size)
+                       content fingerprint (verified at open; legacy (N,5)
+                       rows with mtime_ns are still accepted)
 
 H5Cam usage:
 
@@ -70,11 +77,12 @@ H5Cam usage:
 
 H5CamRig usage:
 
-    rig = H5CamRig.build(path, cam_paths, suffix=...)   # validate, write temp, rename
-    rig = H5CamRig.open(path)                           # verifies the cam fingerprint
+    rig = H5CamRig.build(path, cam_paths, suffix=...)   # validate (out path not
+                                                        # a camera), mkdir, temp, rename
+    rig = H5CamRig.open(path)                           # verifies the cam content fingerprint
     rig.shape                                   # (T, N, Hmax, Wmax)
     rig.rgb(t, n)   rig.depth(t, n, meters=...)  # (Hmax, Wmax); pad = 0/False
-    rig.cam_files, rig.cam_hw                   # the absolute source files
+    rig.cam_files, rig.cam_hw                   # the source files (absolute) + (H, W)
 """
 from .h5base import H5Base, MetaSpec
 from .h5cam import H5Cam

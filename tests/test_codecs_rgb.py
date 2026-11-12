@@ -67,6 +67,36 @@ def test_jpeg_hw_from_sof_header_only():
     assert jpeg_hw(b[:10]) is None                  # truncated: no SOF yet
 
 
+def test_jpeg_hw_survives_truncated_and_odd_headers():
+    # #44: a truncated SOF (header says more bytes follow than exist) is None,
+    # not an IndexError; non-jpeg and a DQT-only prefix are None too
+    b = encode_rgb(_red(8, 12))
+    i = b.index(b"\xff\xc0") if b"\xff\xc0" in b else None
+    for cut in (b"\x89PNG\r\n", b"\xff\xd8\xff\xdb\x00", b"\x00\x01"):
+        assert jpeg_hw(cut) is None
+    # truncate the jpeg at every point: never raises, returns (8, 12) or None
+    for n in range(0, len(b) + 1):
+        jpeg_hw(b[:n])
+    assert jpeg_hw(b) == (8, 12)
+
+
+def test_normalize_kept_frames_are_not_decoded():
+    # #45: a q<=95 frame is kept verbatim without a full decode (the SOF header
+    # suffices for the size check) — the bytes are byte-identical
+    ok, buf = cv2.imencode(".jpg", _red(8, 12), [int(cv2.IMWRITE_JPEG_QUALITY), 95])
+    b = bytes(buf.tobytes())
+    _, _, (out,) = normalize_rgb([b], 1, 1)
+    assert out == b                                 # verbatim, not re-encoded
+    # a kept frame + a same-size over-95 frame: the second is the only decode
+    ok2, buf2 = cv2.imencode(".jpg", _red(8, 12), [int(cv2.IMWRITE_JPEG_QUALITY), 100])
+    _, _, out = normalize_rgb([b, bytes(buf2.tobytes())], 2, 1)
+    assert out[0] == b and jpeg_quality(out[1]) == JPG_QUALITY
+    # different sizes are still a size mismatch, kept or not
+    ok3, buf3 = cv2.imencode(".jpg", _red(4, 4), [int(cv2.IMWRITE_JPEG_QUALITY), 95])
+    with pytest.raises(ValueError, match="size"):
+        normalize_rgb([b, bytes(buf3.tobytes())], 2, 1)
+
+
 def test_normalize_rgb_array():
     H, W, frames = normalize_rgb(_red(8, 12), 1, 1)
     assert (H, W) == (8, 12) and len(frames) == 1

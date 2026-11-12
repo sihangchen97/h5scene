@@ -11,17 +11,17 @@
                the H5Cam writers, the rig's VDS build, and the tests.
 """
 from .rgb import (JPG_QUALITY, decode_rgb, encode_rgb, jpeg_dqt_tables,
-                  jpeg_hw, jpeg_quality, normalize_rgb, rgb_frame_hw)
+                  jpeg_hw, jpeg_quality, normalize_rgb)
 from .depth import (MM_MAX, conf_frame, depth_hw_ok, depth_mask, meters_frame,
                     mm_frame, to_conf, to_mask, to_mm)
 from .pose import broadcast_matrix
-from .sections import FRAME_SHAPE, RESIZABLE, SECTIONS, Spec, filter_args, has, is_metric
+from .sections import FRAME_SHAPE, SECTIONS, Spec, filter_args, has, is_metric
 
 __all__ = [
     "JPG_QUALITY", "decode_rgb", "encode_rgb", "jpeg_dqt_tables", "jpeg_quality",
-    "jpeg_hw", "normalize_rgb", "rgb_frame_hw",
+    "jpeg_hw", "normalize_rgb",
     "MM_MAX", "conf_frame", "depth_hw_ok", "depth_mask", "meters_frame", "mm_frame",
     "to_conf", "to_mask", "to_mm",
     "broadcast_matrix",
-    "FRAME_SHAPE", "RESIZABLE", "SECTIONS", "Spec", "filter_args", "has", "is_metric",
+    "FRAME_SHAPE", "SECTIONS", "Spec", "filter_args", "has", "is_metric",
 ]

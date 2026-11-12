@@ -10,8 +10,8 @@ The rgb section is NOT in this table — it is variable-length image BYTES
 
 The per-section ENCODING (meters->mm, mask broadcast, K/T broadcast, conf
 scaling) is separate: it lives in codecs/depth (depth/depth_conf/mask) and in
-each class's set_* (K/T are a plain (3,3)/(4,4) broadcast). The table is the
-LAYOUT; the codecs are the CONVERSION.
+codecs/pose (K/T are a plain (3,3)/(4,4) broadcast). The table is the LAYOUT;
+the codecs are the CONVERSION.
 """
 from collections import namedtuple
 
@@ -38,9 +38,6 @@ FRAME_SHAPE = {"K": (3, 3), "T": (4, 4)}
 
 # the read decoder name per section (see H5Cam._f / the rig's *_frame)
 # depth & depth_conf are resized back to (H, W); mask is not
-RESIZABLE = {n for n, s in SECTIONS.items() if s.resizable}
-
-
 def filter_args(name):
     """The h5py create_dataset filter kwargs for a section ({} = raw)."""
     s = SECTIONS[name]
@@ -57,8 +54,6 @@ def has(h, name):
     has_meta = m is not None
     if name == "rgb":
         return len(h.get("rgb") or {}) > 0
-    if name == "is_metric":
-        return "is_metric" in h.attrs or (has_meta and "is_metric" in m)
     if name in SECTIONS:
         return name in h
     if has_meta:

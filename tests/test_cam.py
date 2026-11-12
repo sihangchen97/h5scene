@@ -101,6 +101,29 @@ def test_missing_and_bad_files(tmp_path):
         H5Cam(str(tmp_path / "other.h5"))
 
 
+def test_del_section(tmp_path):
+    """#43: a section can be deleted (rgb: all frames; depth/mask/…: the
+    dataset), depth_conf must go first, idempotent, unknown name rejected."""
+    with H5Cam(str(tmp_path / "c.h5"), 2, 4, 6) as cam:
+        cam.set_depth(np.ones((2, 4, 6), np.float32))
+        cam.set_depth_conf(np.ones((2, 4, 6), np.float32))
+        cam.set_mask(np.ones(2, np.bool_))
+    with H5Cam.open(str(tmp_path / "c.h5"), "r+") as cam:
+        assert cam.has("depth") and cam.has("depth_conf")
+        # depth_conf shares depth's (h, w): it must be deleted first
+        with pytest.raises(ValueError, match="depth_conf"):
+            cam.del_section("depth")
+        assert cam.del_section("depth_conf") is cam
+        assert cam.del_section("depth") is cam
+        assert not cam.has("depth") and not cam.has("depth_conf")
+        cam.del_section("mask")
+        assert not cam.has("mask")
+        assert cam.del_section("mask") is cam          # idempotent
+        assert cam.del_section("rgb") is cam          # absent rgb: fine
+        with pytest.raises(ValueError, match="unknown section"):
+            cam.del_section("nope")
+
+
 def test_is_metric_defaults_false(tmp_path):
     with H5Cam(str(tmp_path / "c.h5"), 2, 4, 4) as cam:
         cam.set_rgb([cv2.imencode(".jpg", np.zeros((4, 4, 3), np.uint8))[1].tobytes()] * 2)

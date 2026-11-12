@@ -146,8 +146,7 @@ class H5Cam(H5Base):
 
     @property
     def src_frame_idxs(self):
-        fi = self.meta("src_frame_idxs")
-        return None if fi is None else fi
+        return self.meta("src_frame_idxs")
 
     @property
     def tags(self):
@@ -159,7 +158,6 @@ class H5Cam(H5Base):
             return None                             # dense: drop it
         return value
 
-    # ---- writers (T semantics; codecs/ owns the encoding policy) ----
     # ---- writers (T semantics; codecs/ owns the encoding policy) ----
     def set_rgb(self, rgb):
         """(T,H,W,3) uint8 RGB array / an (H,W,3) array (T=1) / a flat (T,)
@@ -277,6 +275,31 @@ class H5Cam(H5Base):
                 raise ValueError(f"(T,) mask must be length T = {self.T}, got {a.shape}")
             return a
         return self._cam(a)
+
+    def del_section(self, name):
+        """Delete a stored section (/rgb: all its frames; /depth, /mask, …: the
+        whole dataset). depth_conf must be deleted first (it must share depth's
+        (h, w), so it is checked against the section being removed)."""
+        if name not in SECTIONS and name != "rgb":
+            raise ValueError(f"unknown section {name!r}; known: ("
+                             f"'rgb', {', '.join(repr(n) for n in SECTIONS)})")
+        h = self._h
+        if name == "rgb":
+            rg = h.get("rgb")
+            if rg is None or len(rg) == 0:
+                return self
+            del h["rgb"]
+        else:
+            if name == "depth" and "depth_conf" in h:
+                s, s2 = h["depth"].shape, h["depth_conf"].shape
+                if s[1:] == s2[1:]:
+                    raise ValueError("delete 'depth_conf' first (it must share "
+                                     "depth's (h, w); del_section('depth_conf') "
+                                     "then del_section('depth'))")
+            if name not in h:
+                return self
+            del h[name]
+        return self
 
     def _check_depth_hw(self, name, h, w):
         if not depth_hw_ok(h, w, self.H, self.W):
