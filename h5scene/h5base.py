@@ -67,6 +67,13 @@ class MetaSpec:
             if L is not None and value.shape[0] != L:
                 raise ValueError(f"meta {name!r} must be length {L}, "
                                  f"got {value.shape[0]}")
+        if self.type is dict:                      # a /meta/<name>/ group: str
+            if any(not isinstance(k, str) for k in value):
+                raise TypeError(f"meta {name!r} keys must be str")
+            for k, v in value.items():
+                if not isinstance(v, str):
+                    raise TypeError(f"meta {name!r} value {k!r} must be a str, "
+                                    f"got {type(v).__name__}")
 
     def __repr__(self):
         d = f", dtype={np.dtype(self.dtype).name}" if self.dtype else ""
@@ -179,7 +186,7 @@ class H5Base:
             if name not in self.META_KEYS:
                 raise ValueError(f"unknown meta key {name!r}; known: {tuple(self.META_KEYS)}")
             if value is not None:                   # validate first
-                self._check_meta_spec(name, value)
+                self.META_KEYS[name].check(name, value, T=getattr(self, "T", None))
             value = self._meta_value(name, value)  # subclass transform (None = drop)
             m = self._h.require_group("meta")
             if name in m:
@@ -202,7 +209,7 @@ class H5Base:
                 continue
             if k not in self.META_KEYS:
                 raise ValueError(f"unknown meta key {k!r}; known: {tuple(self.META_KEYS)}")
-            self._check_meta_spec(k, v)
+            self.META_KEYS[k].check(k, v, T=getattr(self, "T", None))
         for name, value in kw.items():
             if value is None:
                 continue
@@ -223,20 +230,6 @@ class H5Base:
                 raise TypeError(f"attr {name!r} expects {t.__name__}, "
                                 f"got {type(value).__name__}")
 
-    def _check_meta_spec(self, name, value):
-        spec = self.META_KEYS[name]
-        if isinstance(spec, type):                 # a plain type (legacy)
-            ok = _NUM_EQUIV.get(spec, (spec,))
-            if not isinstance(value, ok):
-                raise TypeError(f"meta {name!r} expects {spec.__name__}, "
-                                f"got {type(value).__name__}")
-            return
-        spec.check(name, value, T=getattr(self, "T", None))
-        if isinstance(value, dict):
-            for k, v in value.items():
-                if not isinstance(v, str):
-                    raise TypeError(f"meta {name!r} value {k!r} must be a str, "
-                                    f"got {type(v).__name__}")
 
     @staticmethod
     def _as_str(x):

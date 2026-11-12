@@ -42,7 +42,7 @@ import numpy as np
 from .codecs import (FRAME_SHAPE, SECTIONS, conf_frame, depth_mask as _dm,
                      decode_rgb, has, is_metric as _is_metric,
                      jpeg_hw, mm_frame, meters_frame)
-from .h5base import H5Base
+from .h5base import H5Base, MetaSpec
 from .h5cam import H5Cam
 
 _STR = h5py.string_dtype(encoding="utf-8")
@@ -71,7 +71,7 @@ class H5CamRig(H5Base):
                  "cam_fp": np.ndarray}     # int64 (N, 4) = (T, H, W, size) content fp
     META_KEYS = {**{k: v for k, v in H5Cam.META_KEYS.items()
                     if k not in ("seq", "src_frame_idxs")},
-                 "suffix": str}            # this rig's own variant marker
+                 "suffix": MetaSpec(str)}  # this rig's own variant marker
 
     @classmethod
     def build(cls, out_path, cam_paths, suffix=""):
@@ -258,31 +258,31 @@ class H5CamRig(H5Base):
         if missing:
             raise FileNotFoundError(f"camera source file(s) missing: {missing}")
         os.makedirs(osp.dirname(out_path) or ".", exist_ok=True)
-        # 1) open + validate everything (no file written yet)
-        cams = [H5Cam(p) for p in absp]
+        # 1) open + validate everything (no file written yet); a failure
+        # opening the k-th camera still closes cameras 0..k-1 deterministically
+        cams = []
         try:
+            for p in absp:
+                cams.append(H5Cam(p))
             vals, meta = self._validate(cams)
-        except Exception:
-            for c in cams:
-                c.close()
-            raise
-        # 2) write to a temp file, then rename into place (the cameras are
-        # always released, even when this fails)
-        tmp = f"{out_path}.tmp.{os.getpid()}"
-        try:
-            try:
-                self._write(tmp, absp, vals, meta, suffix)
-                os.replace(tmp, out_path)
-            finally:
-                try:
-                    if osp.exists(tmp):
-                        os.remove(tmp)
-                except OSError:
-                    pass
         finally:
             for c in cams:
                 c.close()
+        # 2) write to a temp file through a base-class handle (the /meta group
+        # and the set_meta serialization are H5Base's), then rename into place;
+        # a failed write aborts the temp file
+        tmp = f"{out_path}.tmp.{os.getpid()}"
+        handle = object.__new__(H5CamRig)          # bypass the rig's __init__
+        H5Base.__init__(handle, tmp, create=True)
+        try:
+            self._write(handle, absp, vals, meta, suffix)
+            handle.close()
+            os.replace(tmp, out_path)
+        except Exception:
+            handle._abort_create()                 # close + remove the half-made file
+            raise
         self._h = h5py.File(out_path, "r")
+        self._created = False
 
     def _validate(self, cams):
         """All cross-camera checks; returns (T, H, W, N, has_rgb, secs, dhw,
@@ -320,7 +320,6 @@ class H5CamRig(H5Base):
         secs = secs[0]
         dhw = []
         for n, c in enumerate(cams):
-            h_ = None
             for name in ("depth", "depth_conf"):
                 if name in c._h:
                     s = c._h[name].shape[1:]
@@ -329,7 +328,6 @@ class H5CamRig(H5Base):
                                          f"but the camera is ({c.H}, {c.W}): the rig "
                                          f"maps per-frame VDS blocks and cannot "
                                          f"upscale downsampled depth")
-                    h_ = s
             if has_rgb[n]:                        # size check from the SOF header
                 for t in range(c.T):
                     b = c._h["rgb"][f"{t}"][:].tobytes()
@@ -348,61 +346,54 @@ class H5CamRig(H5Base):
                 shared[k] = vals[0]
         return (T, H, W, N, has_rgb[0], secs, dhw), (dataset, scene, is_metric, shared)
 
-    def _write(self, path, absp, vals, meta, suffix):
+    def _write(self, rig, absp, vals, meta, suffix):
+        """Write the rig file (an open H5Base handle on the temp path)."""
         T, H, W, N, has_rgb, secs, dhw = vals
         dataset, scene, is_metric, shared = meta
+        h = rig._h
         # references are stored relative to the rig file's directory: VDS and
         # ExternalLinks resolve that way, so a rig copied/moved together with
         # its cameras keeps working (the fingerprint is content-based, not
         # mtime-based, so `cp`/`rsync`/git-checkout don't break it).
-        d = osp.dirname(path) or "."
+        d = osp.dirname(rig.path) or "."
         relp = [osp.relpath(p, d) for p in absp]
-        with h5py.File(path, "w", libver="latest") as h:
-            h.attrs["TNHW"] = np.array((T, N, H, W), np.int64)
-            h.attrs["is_metric"] = is_metric
-            h.attrs["cam_files"] = np.array(relp, dtype=_STR)
-            h.attrs["cam_hw"] = np.array(dhw, np.int64)
-            fps = []
-            for p, (hh, ww) in zip(absp, dhw):
-                st = os.stat(p)
-                fps.append((T, hh, ww, st.st_size))    # (T, H, W, size): content
-            h.attrs["cam_fp"] = np.array(fps, np.int64)
-            # /rgb: nothing stored — each (t, n) is an ExternalLink to the
-            # camera's own /rgb/{t} (variable-length jpg cannot be a VDS).
-            # rgb(t, n) decodes at camera n's NATIVE (H, W).
-            if has_rgb:
-                rg = h.create_group("rgb")
-                for n, r in enumerate(relp):
+        rig.set_attr("TNHW", np.array((T, N, H, W), np.int64))
+        rig.set_attr("is_metric", is_metric)
+        rig.set_attr("cam_files", np.array(relp, dtype=_STR))
+        rig.set_attr("cam_hw", np.array(dhw, np.int64))
+        fps = []
+        for p, (hh, ww) in zip(absp, dhw):
+            st = os.stat(p)
+            fps.append((T, hh, ww, st.st_size))    # (T, H, W, size): content
+        rig.set_attr("cam_fp", np.array(fps, np.int64))
+        # /rgb: nothing stored — each (t, n) is an ExternalLink to the
+        # camera's own /rgb/{t} (variable-length jpg cannot be a VDS).
+        # rgb(t, n) decodes at camera n's NATIVE (H, W).
+        if has_rgb:
+            rg = h.create_group("rgb")
+            for n, r in enumerate(relp):
+                for t in range(T):
+                    rg[f"{t}_{n}"] = h5py.ExternalLink(r, f"/rgb/{t}")
+        # fixed-shape sections: VDS referencing the cameras
+        for name in secs:
+            s = SECTIONS[name]
+            fixed = not s.frame2d               # (3,3)/(4,4) frames
+            shp = FRAME_SHAPE[name] if fixed else (H, W)
+            lay = h5py.VirtualLayout(shape=(T, N, *shp), dtype=s.dtype)
+            for n, (hh, ww) in enumerate(dhw):
+                if fixed:                       # (3,3)/(4,4): one block per camera
+                    lay[:, n, ...] = h5py.VirtualSource(
+                        relp[n], name, shape=(T, *FRAME_SHAPE[name]))
+                elif (hh, ww) == (H, W):       # full-size: one block
+                    lay[:, n, ...] = h5py.VirtualSource(relp[n], name, shape=(T, H, W))
+                else:                           # per-frame (h, w) blocks;
+                    # pad region -> fillvalue; the [t] selects camera frame t
                     for t in range(T):
-                        rg[f"{t}_{n}"] = h5py.ExternalLink(r, f"/rgb/{t}")
-            # fixed-shape sections: VDS referencing the cameras
-            for name in secs:
-                s = SECTIONS[name]
-                fixed = not s.frame2d               # (3,3)/(4,4) frames
-                shp = FRAME_SHAPE[name] if fixed else (H, W)
-                lay = h5py.VirtualLayout(shape=(T, N, *shp), dtype=s.dtype)
-                for n, (hh, ww) in enumerate(dhw):
-                    if fixed:                       # (3,3)/(4,4): one block per camera
-                        lay[:, n, ...] = h5py.VirtualSource(
-                            relp[n], name, shape=(T, *FRAME_SHAPE[name]))
-                    elif (hh, ww) == (H, W):       # full-size: one block
-                        lay[:, n, ...] = h5py.VirtualSource(relp[n], name, shape=(T, H, W))
-                    else:                           # per-frame (h, w) blocks;
-                        # pad region -> fillvalue; the [t] selects camera frame t
-                        for t in range(T):
-                            lay[t, n, :hh, :ww] = h5py.VirtualSource(
-                                relp[n], name, shape=(T, hh, ww))[t]
-                h.create_virtual_dataset(name, lay, fillvalue=s.fillvalue)
-            m = h.require_group("meta")
-            for k, v in (("dataset", dataset), ("scene", scene), ("suffix", suffix)):
-                if v:
-                    m.create_dataset(k, data=np.array(str(v), dtype=_STR))
-            for k, v in shared.items():
-                if isinstance(v, dict):
-                    tg = m.create_group(k)
-                    for kk, vv in v.items():
-                        tg.create_dataset(kk, data=np.array(vv, dtype=_STR))
-                elif isinstance(v, np.ndarray):
-                    m.create_dataset(k, data=v.astype(np.int64))
-                else:
-                    m.create_dataset(k, data=np.array(str(v), dtype=_STR))
+                        lay[t, n, :hh, :ww] = h5py.VirtualSource(
+                            relp[n], name, shape=(T, hh, ww))[t]
+            h.create_virtual_dataset(name, lay, fillvalue=s.fillvalue)
+        # /meta: the base set_meta (validated before any write; empty values
+        # skipped as before)
+        rig.set_meta(**{k: v for k, v in
+                        (("dataset", dataset), ("scene", scene),
+                         ("suffix", suffix), *shared.items()) if v})

@@ -83,3 +83,20 @@ def test_rig_registries_have_no_seq(tmp_path):
         assert "seq" not in type(rig).__dict__   # no seq property at all
         assert not hasattr(rig, "seq")
         assert len(rig.cam_files) == 2 and list(rig.cam_hw) == [(8, 8), (8, 8)]
+
+
+def test_meta_registry_is_all_metasp(tmp_path):
+    """#48: every META_KEYS entry is a MetaSpec (no plain type left) and the
+    tags value check (str keys, str values) lives in MetaSpec.check."""
+    from h5scene import H5Cam
+    from h5scene.h5base import MetaSpec
+    for spec in H5Cam.META_KEYS.values():
+        assert isinstance(spec, MetaSpec), spec
+    # a non-str tags value / key is rejected by the spec, not a legacy branch
+    class C(H5Cam):
+        pass
+    with H5Cam(str(tmp_path / "c.h5"), 2, 4, 4) as cam:
+        with pytest.raises(TypeError, match="must be a str"):
+            cam.set_meta(tags={"a": 5})
+        cam.set_meta(tags={"a": "x"})
+        assert cam.meta("tags") == {"a": "x"}

@@ -26,13 +26,13 @@ class H5Cam(H5Base):
 
     ATTR_KEYS = {"THW": np.ndarray,        # int64 (3,) = (T, H, W)
                  "is_metric": bool}
-    META_KEYS = {"dataset": str,           # top-level dataset name
-                 "scene": str,             # scene id
-                 "seq": str,               # sequence
-                 "suffix": str,            # variant marker (train/val, camera/version)
-                 "split": str,             # train/val split
+    META_KEYS = {"dataset": MetaSpec(str),        # top-level dataset name
+                 "scene": MetaSpec(str),          # scene id
+                 "seq": MetaSpec(str),            # sequence
+                 "suffix": MetaSpec(str),         # variant marker (train/val, camera/version)
+                 "split": MetaSpec(str),          # train/val split
                  "src_frame_idxs": MetaSpec(np.ndarray, dtype=np.int64, length="T"),
-                 "tags": MetaSpec(dict)}   # /meta/tags/* utf-8 (str values)
+                 "tags": MetaSpec(dict)}          # /meta/tags/* utf-8 (str keys and values)
 
     def __init__(self, path, t=None, h=None, w=None, is_metric=False, mode=None):
         if t is not None:

@@ -63,21 +63,16 @@
 
 ### Robustness / API
 
-43. 🔲 **Depth resolution can't be changed in place.** While `depth_conf` exists at the old `(h, w)`, `set_depth` at a new `(h, w)` is rejected, and the same holds the other way round. There is also no way to delete a section. Add `del_section(name)`, or a way to set both together.
-44. 🔲 **`jpeg_hw` misses some cases.**
-    - Its SOF list leaves out `C1/C6/CA/CE/CF`. SOF1 (extended sequential) is legal from non-cv2 encoders, and those files fall back to a full decode.
-    - `while i + 8 <= len(b)` then reads `b[i+8]`, which raises `IndexError` on a truncated header.
-45. 🔲 **`normalize_rgb` fully decodes every input frame, even frames whose bytes are kept verbatim.** Use `jpeg_hw` for the size check, and decode only the frames that get re-encoded.
-46. 🔲 **Rig camera handles are opened outside the `try`.** `cams = [H5Cam(p) for p in absp]` sits before the `try`, so if the k-th open fails, cameras 0..k-1 stay open until GC closes them. That isn't a leak in practice, but the close isn't deterministic.
+43. ✅ **Depth resolution can't be changed in place.** `del_section(name)` added (rgb: all frames; the rest: the whole dataset); depth cannot go while depth_conf shares its (h, w) — delete depth_conf first, then set_depth at the new (h, w) works. (test_del_section) While `depth_conf` exists at the old `(h, w)`, `set_depth` at a new `(h, w)` is rejected, and the same holds the other way round. There is also no way to delete a section. Add `del_section(name)`, or a way to set both together.
+44. ✅ **`jpeg_hw` misses some cases.** SOF list now covers C0–CF; a truncated SOF (or a malformed ln<4) returns None instead of IndexError (test_jpeg_hw_survives_truncated_and_odd_headers scans every truncation point).
+45. ✅ **`normalize_rgb` fully decodes every input frame.** A q<=95 jpeg is size-checked from the SOF header only and kept verbatim; only re-encoded frames are decoded (test_normalize_kept_frames_are_not_decoded). Use `jpeg_hw` for the size check, and decode only the frames that get re-encoded.
+46. ✅ **Rig camera handles are opened outside the `try`.** Cameras are opened inside the try that closes them in a `finally` — a k-th open failure closes cameras 0..k-1 deterministically. `cams = [H5Cam(p) for p in absp]` sits before the `try`, so if the k-th open fails, cameras 0..k-1 stay open until GC closes them. That isn't a leak in practice, but the close isn't deterministic.
 
 ### Simplification / stale bits
 
-47. 🔲 **The rig build duplicates base code.**
-    - `_build` bypasses `H5Base.__init__`: it sets `path` and `_h` by hand and never sets `_created`.
-    - `_write` re-implements the `/meta` serialization (dict→group, str), including an ndarray branch that is dead because `src_frame_idxs` is excluded from the rig.
-    - Fix: write the temp file through an `H5Base` handle and `set_meta`.
-48. 🔲 **The registry is half `MetaSpec`.** `H5Cam.META_KEYS` mixes plain `str` types with `MetaSpec`, while the docs say the values are `MetaSpec`, so `_check_meta_spec` keeps a "legacy" plain-type branch for that. The `tags` value check lives in `H5Base` instead of `MetaSpec`, and `tags` keys aren't checked at all. Make every entry a `MetaSpec` and move the dict check into `MetaSpec.check`.
-49. 🔲 **Dead code and stale text:**
+47. ✅ **The rig build duplicates base code.** The temp file is written through a base-class handle (`H5Base.__init__(…, create=True)` on the temp path; `_abort_create` on failure) — attrs go through `set_attr`, /meta through the base `set_meta` (validated before any write); the hand-rolled /meta serialization and its dead ndarray branch are gone.
+48. ✅ **The registry is half `MetaSpec`.** Every META_KEYS entry is a MetaSpec (H5Cam + the rig's suffix); the tags check (str keys AND values) moved into MetaSpec.check; the legacy plain-type branch of `_check_meta_spec` is gone (test_meta_registry_is_all_metasp). `H5Cam.META_KEYS` mixes plain `str` types with `MetaSpec`, while the docs say the values are `MetaSpec`, so `_check_meta_spec` keeps a "legacy" plain-type branch for that. The `tags` value check lives in `H5Base` instead of `MetaSpec`, and `tags` keys aren't checked at all. Make every entry a `MetaSpec` and move the dict check into `MetaSpec.check`.
+49. ✅ **Dead code and stale text** — all fixed in the two review commits (`9967b49` codecs/h5cam/docs + this commit: rig `h_`).
     - **Unused:**
       - `h_` in `H5CamRig._validate`.
       - `RESIZABLE`, exported but unused, with a stale "read decoder name" comment.
