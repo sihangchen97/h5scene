@@ -1,0 +1,42 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "h5scene"
+version = "0.1.0"
+description = "Per-scene HDF5 writer + H5Scene file handle with the unified (T, N, H, W) layout."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy",
+    "opencv-python",
+    "h5py",
+]
+
+[project.optional-dependencies]
+test = ["pytest"]
+imgtest = ["scikit-image"]
+
+[tool.setuptools.packages.find]
+include = ["h5scene*"]
+
+[tool.pixi.workspace]
+channels = ["conda-forge"]
+platforms = ["linux-64"]
+
+[tool.pixi.pypi-dependencies]
+h5scene = { path = ".", editable = true }
+
+[tool.pixi.environments]
+default = { solve-group = "default" }
+test = { features = ["test"], solve-group = "default" }
+imgtest = { features = ["imgtest"], solve-group = "default" }
+
+[tool.pixi.tasks]
+test = "python -m pytest tests/ -q"
+smoke-img = "python tests/smoke_image_formats.py"
+
+[tool.pixi.dependencies]
+pillow = ">=13.0.0,<14"
+scikit-image = ">=0.26.0,<0.27"

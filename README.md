@@ -1,0 +1,57 @@
+# h5scene
+
+Per-scene HDF5 writer + `H5Scene` file handle with the unified
+`(T, N, …)` layout (T = time, N = camera). One file, two APIs:
+
+- `write_scene_h5(path, rgb, …)` / `verify_scene_h5(path, rgb, …)` — one-shot
+  write / byte-level verify (the functional API).
+- `H5Scene` — a **direct file handle, no in-memory data**:
+  `H5Scene(path, T, N, H, W)` creates (TNHW pinned in `attrs`),
+  `H5Scene(path)` opens; every `set_*` validates its shape against the pinned
+  TNHW and writes straight into the file; every read comes straight out.
+
+## Layout
+
+```
+<scene>.h5
+  /rgb/{t}_{n}   uint8 1-D image BYTES (jpg q95) — key derived from (t, n)
+  /depth         uint16 (T,N,H,W) mm, 0 AND 65535 invalid, lossless gzip4+shuffle [optional]
+  /mask          bool   (T,N,H,W) 1 = valid, 0 = padding, gzip4   [optional]
+  /K             f32    (T,N,3,3); (3,3) input broadcasts     [optional]
+  /T             f32    (T,N,4,4) c2w; (4,4) input broadcasts [optional]
+  /depth_conf    f16    (T,N,H,W) 0-1, gzip4                  [optional]
+  /scene_path    utf-8 string                                 [optional]
+  /meta_json     utf-8 string                                 [optional]
+  /meta/is_metric bool   /meta/is_video bool
+  attrs: TNHW = int64 (T, N, H, W)
+```
+
+## Usage
+
+```python
+from h5scene import H5Scene, write_scene_h5, verify_scene_h5
+
+# one-shot
+write_scene_h5("s.h5", rgb, depth=depth_m, K=K, pose=pose)
+ok, msgs = verify_scene_h5("s.h5", rgb, depth=depth_m, K=K, pose=pose)
+
+# direct file handle
+s = H5Scene("s.h5", T, N, H, W)
+s.set_rgb(rgb)                    # (T,N,H,W,3) uint8 / (H,W,3) / image-bytes seq
+s.set_depth(depth_m)              # float meters or uint16 mm (>65.535 m -> 0)
+s.set_mask(mask)                  # (T,N,H,W) / (H,W) broadcast / (T,N) slots
+s.set_K(K); s.set_pose(pose); s.set_depth_conf(conf); s.set_meta(scene_path=…)
+s.close()
+
+with H5Scene("s.h5") as s:       # open
+    s.shape, s.keys, s.has("depth")
+    s.rgb_bytes(t, n)            # stored jpg q95 bytes
+    s.rgb(t, n)                  # decoded (H,W,3) uint8
+    s.depth(t, n, meters=True); s.K(t, n); s.pose(t, n)
+    s.mask(t, n); s.depth_conf(t, n); s.scene_path; s.meta_json
+    s.depth_mask(t, n, conf_min=…)    # (H,W) bool, derived: depth valid (0/65535 excluded)
+                                       # and, if depth_conf present, conf > 0 (or > conf_min)
+```
+
+Install editable: `pip install -e .` (needs numpy / opencv-python / h5py).
+Test: `pytest` or `python -m pytest tests/`.
