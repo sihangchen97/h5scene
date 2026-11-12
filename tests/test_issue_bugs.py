@@ -120,6 +120,21 @@ def test_rig_open_detects_rewritten_camera(tmp_path):
         H5CamRig(out)
 
 
+def test_frame_indices_length_enforced(tmp_path):
+    """#13/#32: frame_indices must be length T (checked by the MetaSpec, not
+    silently accepted); a wrong-length array is rejected before any write."""
+    with H5Cam(str(tmp_path / "c.h5"), 3, 8, 8) as cam:
+        with pytest.raises(ValueError, match="length 3"):
+            cam.set_meta(frame_indices=np.arange(7))
+        cam.set_meta(frame_indices=np.array([5, 9, 12]))
+    with H5Cam(str(tmp_path / "c.h5")) as cam:
+        assert list(cam.frame_indices) == [5, 9, 12]
+    # dense (== arange(T)) is dropped on write
+    with H5Cam.open(str(tmp_path / "c.h5"), "r+") as cam:
+        cam.set_meta(frame_indices=np.arange(3))
+        assert cam.frame_indices is None
+
+
 def test_rig_rejects_empty_and_duplicate_paths(tmp_path):
     """#18: empty or duplicate cam_paths must fail with a clear error."""
     with pytest.raises(ValueError, match="at least one"):

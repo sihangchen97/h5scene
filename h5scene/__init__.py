@@ -77,8 +77,8 @@ H5CamRig usage:
     rig.rgb(t, n)   rig.depth(t, n, meters=...)  # (Hmax, Wmax); pad = 0/False
     rig.cam_files, rig.cam_hw                   # the absolute source files
 """
-from .h5base import H5Base
+from .h5base import H5Base, MetaSpec
 from .h5cam import H5Cam
 from .h5camrig import H5CamRig
 
-__all__ = ["H5Base", "H5Cam", "H5CamRig"]
+__all__ = ["H5Base", "H5Cam", "H5CamRig", "MetaSpec"]

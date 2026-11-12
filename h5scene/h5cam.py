@@ -18,7 +18,7 @@ from .codecs import (FRAME_SHAPE, SECTIONS, broadcast_matrix, conf_frame, depth_
                      is_metric as _is_metric, mm_frame, meters_frame,
                      normalize_rgb, to_conf, to_mask, to_mm)
 from .codecs.rgb import decode_rgb
-from .h5base import H5Base
+from .h5base import H5Base, MetaSpec
 
 _STR_KEYS = ("dataset", "scene", "seq", "suffix", "split", "meta_json")
 
@@ -37,8 +37,8 @@ class H5Cam(H5Base):
                  "suffix": str,            # variant marker (train/val, camera/version)
                  "split": str,             # train/val split
                  "meta_json": str,         # source metadata verbatim
-                 "frame_indices": np.ndarray,  # int64 (T,) source frame numbers
-                 "tags": dict}             # /meta/tags/* utf-8 (str values)
+                 "frame_indices": MetaSpec(np.ndarray, dtype=np.int64, length="T"),
+                 "tags": MetaSpec(dict)}   # /meta/tags/* utf-8 (str values)
 
     def __init__(self, path, t=None, h=None, w=None, is_metric=False, mode=None):
         if t is not None:
@@ -177,8 +177,7 @@ class H5Cam(H5Base):
                 H5Base.set_meta(self, name, val)
         if frame_indices is not None:
             fi = np.asarray(frame_indices)
-            if fi.ndim != 1 or fi.shape[0] != self.T:
-                raise ValueError(f"frame_indices must be (T=({self.T},)), got {fi.shape}")
+            self._check_meta_spec("frame_indices", fi)   # dtype + length T (clear error)
             if (fi == np.arange(self.T)).all():
                 H5Base.set_meta(self, "frame_indices", None)   # dense: drop it
             else:
