@@ -7,10 +7,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 Environment is managed by pixi (`pyproject.toml` `[tool.pixi.*]`); the package is installed editable into it.
 
 ```bash
-pixi run -e test test                                   # full suite (pytest tests/ -q, skips the smoke script)
+pixi run test                                          # full suite (pytest tests/ -q; the smoke script is named smoke_*.py so pytest never collects it)
 pixi run -e test python -m pytest tests/test_rig.py -q  # one file
 pixi run -e test python -m pytest tests/test_rig.py::test_rig_mixed_hw -q   # one test
-pixi run -e imgtest smoke-img    # tests/smoke_image_formats.py: rgb format/quality comparison (pillow + scikit-image, imgtest env only)
+pixi run smoke-img                                     # tests/smoke_image_formats.py: rgb format/quality comparison (pillow + scikit-image, imgtest env only)
 ```
 
 No linter/formatter is configured. Without pixi: `pip install -e .[test]` (numpy, opencv-python, h5py).

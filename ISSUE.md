@@ -40,9 +40,9 @@
 | 32 | 结构 | ✅ | `MetaSpec(type, dtype=, length="T")` 注册表:h5base 校验 dtype+axis-0 长度(frame_indices 的 (T,) 在基类层强拒,#13 的 length-7 不再接受);rig 的 `META_KEYS` 从 `H5Cam.META_KEYS` 推导(cam keys minus seq/frame_indices + suffix);`test_frame_indices_length_enforced` |
 | 33 | 结构 | ⏭️ | in-memory `CamRig` 做过后**按用户要求退回**(未提交):内存版每帧读多一次 pad 拷贝、多一个持有句柄的类,收益不大;VDS 文件版保留为唯一形态 |
 | 34 | 结构 | ✅ | `__len__` / `sections` / `__repr__`(两个类都有) |
-| 35 | 结构 | ⏭️ | 测试布局未动(现有 5 个 test 文件够用;smoke 移 scripts/ 会改 pixi 任务面) |
+| 35 | 结构 | ✅ | 测试镜像模块:`tests/test_codecs_depth.py`(7)+ `tests/test_codecs_rgb.py`(10,纯 numpy/cv2,imgtest env 不需要)+ `test_h5cam.py`→`test_cam.py`(git mv);`test_rig.py` 旧 docstring 修掉;pixi `test` 任务去掉 `--ignore`(smoke 按 `smoke_*.py` 命名本就不被 pytest 收集——已验证 collect-only 为 0)。**注:smoke 文件没搬去 scripts/**——用户的 cleanliness 规则强制 tests/smoke 脚本必须在 tests/,与 ISSUE 建议冲突,以用户规则为准 |
 
-**计数:✅ 32(全部 bug 1-9 + 文档 10-17 + 健壮 18-26 + 结构 #27 #28 #30 #31 #32 #34)/ ⏭️ 3(#29 reader mixin · #33 in-memory CamRig(做过后退回)· #35 测试布局)**
+**计数:✅ 33(+ 结构 #35 测试布局)/ ⏭️ 2(#29 reader mixin · #33 in-memory CamRig(做过后退回))**
 
 ## 追加:OCR 独立审计(18 条,2026-11-12 20:27 NZST)
 **✅ 修了 8 项(各带回归测试或 diff):rig build 的 cams 句柄泄漏(try/finally)· h5cam open 只捕 ValueError(改 Exception)· `_abort_create` close 无保护 + `__exit__` close 掩盖原异常 · to_mm 恰好 65.535 m 可写成 65535(→ 0,读写对哨兵达成一致)· normalize_rgb 空输入 `(None,None,())`(→ 明确报错)· encode_rgb 不查 imencode success · 死代码 ×3(rig 的 filter_args / h5cam 的 os / rig_scan 的 eager-load hw)· requires-python `>=3.10` 与 pillow13/skimage0.26 的 `>=3.11` 冲突 → `>=3.11`**

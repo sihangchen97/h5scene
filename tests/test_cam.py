@@ -1,5 +1,6 @@
 from pathlib import Path
-"""Tests for H5Cam (single-camera, (T, H, W)) — round trips, the per-section
+"""Tests for H5Cam (single-camera, (T, H, W); the h5cam module — renamed from
+test_h5cam.py to mirror the module, ISSUE #35) — round trips, the per-section
 storage policy (stored depth at (h,w), jpg q<=95 rgb), and the meta keys."""
 
 import cv2
@@ -56,7 +57,7 @@ def test_round_trip(tmp_path):
         # meta
         assert cam.dataset == "syn" and cam.scene == "s" and cam.seq == "q1"
         assert cam.suffix == "0" and cam.tags == {"data_type": "synthetic"}
-        assert cam.frame_indices is None
+        assert cam.src_frame_idxs is None
         assert not cam.has("split")
 
 

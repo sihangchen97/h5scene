@@ -1,8 +1,9 @@
-"""Tests for H5Cam (single-camera) + H5CamRig (N x H5Cam -> (T, N, Hmax, Wmax))
-in h5scene/rig.py. H5CamRig stores the fixed-shape sections (/depth /mask /K
-/T /depth_conf) as HDF5 VIRTUAL DATASETS referencing the camera files
-(0 bytes on disk, compressed source mapped directly, pad via fillvalue) and
-/rgb physically (jpg is variable-length, not virtualizable).
+"""Tests for H5CamRig (N x H5Cam -> (T, N, Hmax, Wmax)) in h5scene/h5camrig.py.
+H5CamRig is a references-only file (0 bytes of data on disk): the fixed-shape
+sections (/depth /mask /K /T /depth_conf) are HDF5 VIRTUAL DATASETS
+referencing the camera files (compressed source mapped directly, pad via
+fillvalue) and /rgb/{t}_{n} are ExternalLinks to each camera's /rgb/{t}
+(jpg bytes, never re-encoded; rgb(t, n) decodes at the camera's native size).
 
 Covers: mixed-H merge (one axis identical, other = max + pad), the strict
 checks (T / is_metric / section-set / both-axes-differ), VDS zero-copy +
