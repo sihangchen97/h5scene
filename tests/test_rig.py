@@ -32,7 +32,7 @@ def _mk_cam(path, T, H, W, seed, has_depth=True):
             img = np.full((H, W, 3), (t * 7 + seed) % 250, np.uint8)
             img[0, 0] = (seed, t % 255, 0)          # corner marker
             b.append(cv2.imencode(".jpg", img, [int(cv2.IMWRITE_JPEG_QUALITY), 95])[1].tobytes())
-        cam.set_rgb(b)
+        cam.set_rgb_bytes(b)
         if has_depth:
             cam.set_depth_meters(np.full((T, H, W), 1.0 + t / 100.0, np.float32))
         cam.set_meta(dataset="syn", scene="s", seq=f"q{seed}")   # seqs differ -> the rig merges them
@@ -100,7 +100,7 @@ def test_rig_is_metric_mismatch_rejected(tmp_path):
     _mk_cam(a, 4, 32, 48, seed=1)
     b = str(tmp_path / "b.h5")
     with H5Cam.create(b, 4, 32, 48, is_metric=True) as cam:
-        cam.set_rgb([cv2.imencode(".jpg", np.zeros((32, 48, 3), np.uint8))[1].tobytes()
+        cam.set_rgb_bytes([cv2.imencode(".jpg", np.zeros((32, 48, 3), np.uint8))[1].tobytes()
                      for _ in range(4)])
     with pytest.raises(ValueError, match="is_metric"):
         H5CamRig.build(str(tmp_path / "rig.h5"), [a, b])
@@ -134,7 +134,7 @@ def test_rig_dataset_scene_mismatch_rejected(tmp_path):
     _mk_cam(a, 4, 32, 48, seed=1)
     b = str(tmp_path / "b.h5")                      # different scene name
     with H5Cam.create(b, 4, 32, 48) as cam:
-        cam.set_rgb([cv2.imencode(".jpg", np.zeros((32, 48, 3), np.uint8))[1].tobytes()
+        cam.set_rgb_bytes([cv2.imencode(".jpg", np.zeros((32, 48, 3), np.uint8))[1].tobytes()
                      for _ in range(4)])
         cam.set_meta(dataset="syn", scene="other")
     with pytest.raises(ValueError, match="scene mismatch"):
@@ -153,7 +153,7 @@ def test_rig_throughput(tmp_path):
         cam = H5Cam.create(p, T, H, W_)
         rng = np.random.default_rng(i)
         try:
-            cam.set_rgb([cv2.imencode(".jpg", rng.integers(0, 256, (H, W_, 3), np.uint8),
+            cam.set_rgb_bytes([cv2.imencode(".jpg", rng.integers(0, 256, (H, W_, 3), np.uint8),
                                       [int(cv2.IMWRITE_JPEG_QUALITY), 95])[1].tobytes()
                          for _ in range(T)])
             cam.set_depth_meters(rng.uniform(0.1, 30.0, (T, H, W_)).astype(np.float32))

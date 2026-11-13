@@ -139,7 +139,7 @@ def test_del_section(tmp_path):
 
 def test_is_metric_defaults_false(tmp_path):
     with H5Cam.create(str(tmp_path / "c.h5"), 2, 4, 4) as cam:
-        cam.set_rgb([cv2.imencode(".jpg", np.zeros((4, 4, 3), np.uint8))[1].tobytes()] * 2)
+        cam.set_rgb_bytes([cv2.imencode(".jpg", np.zeros((4, 4, 3), np.uint8))[1].tobytes()] * 2)
     with H5Cam.open(str(tmp_path / "c.h5")) as cam:
         assert cam.is_metric is False
 

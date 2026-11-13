@@ -23,6 +23,7 @@
 ```
 <cam>.h5
   # ---- 根 attrs(数据侧)----
+  file_type   str = "h5cam"               必有(create pin;类型标签,构造器拒不符)
   THW         int64 (3,) = (T, H, W)        必有
   is_metric   bool                        必有(构造默认 False)
   # ---- sections ----
@@ -30,8 +31,13 @@
   /depth      uint16 (T, h, w) mm;0 与 65535 双哨兵;gzip4 + shuffle;
               h<=H w<=W 且 H/W 比例一致;读回 resize 回 (H,W)          [可选]
   /mask       bool (T, H, W);1 = valid,gzip4;整帧 padding 可 (T,) 广播  [可选]
-  /K          f32 (T, 3,3) raw;(3,3) 输入广播                       [可选]
-  /T          f32 (T, 4,4) c2w raw;(4,4) 输入广播                   [可选]
+  /K          f32 (T, 3,3) raw;(3,3) 输入广播;约定 = OpenCV pinhole:
+              fx K[0,0] / fy K[1,1] > 0,K[2,2] = 1,skew K[1,0] = 0,
+              K[2,1] = K[2,0] = 0;set_K 对每一帧校验(check_K)      [可选]
+  /T          f32 (T, 4,4) c2w raw;(4,4) 输入广播;约定 = camera-to-world:
+              末行 [0,0,0,1],R = T[:3,:3] 正交且 det = 1;
+              set_pose_c2w 对每一帧校验(check_pose)               [可选]
+              # 像素约定:主点 (u, v) = K[0,2] / K[1,2];像素 (u, v) 即点 (u, v)
   /depth_conf f16 (T, h, w) 0-1,gzip4,与 /depth 同 (h, w)           [可选]
               # 输入只收 0-1 float(set_depth_conf_01,整型拒绝)
   # ---- /meta(数据集侧,全部可选;缺失不写键)----
@@ -41,8 +47,11 @@
   /meta/suffix         str 变体标记(train/val、相机/版本;定位键 4)
   /meta/split          str 标量(train/val/test)
   /meta/src_frame_idxs  int64 (T,) 源帧号;仅 != arange(T) 时才写(dense 丢弃)
+  /meta/src_frame_ids   utf-8 (T,) 源帧 ID(字符串:tum 时间戳 / dl3dv 路径);
+                        必须唯一;rig 无此键(合并轴无单一意义)
+  /meta/timestamps      f64 (T,) 源帧时间戳(整型输入升 f64)
   /meta/tags/*         str 数据集侧标签(data_type/dynamics/environment/
-                       view_density/view_type …),/meta/tags/ 子组,缺失的标签不写键
+                        view_density/view_type …),/meta/tags/ 子组,缺失的标签不写键
 ```
 
 - 定位语义:`(dataset, scene[, seq])` 相同的多个 h5 = 同一 scene 的多视角相机,
@@ -57,6 +66,7 @@
 ```
 <rig>.h5
   # ---- 根 attrs ----
+  file_type  str = "h5camrig"               必有(build pin;类型标签,构造器拒不符)
   TNHW       int64 (4,) = (T, N, Hmax, Wmax)  必有
   is_metric  bool                               必有(继承自相机,须一致)
   cam_files  str[]  源相机文件路径(相对 rig 文件所在目录;VDS/ExternalLink

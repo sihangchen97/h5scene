@@ -73,7 +73,7 @@ def test_rig_registries_have_no_seq(tmp_path):
     for i in (0, 1):
         cp = str(tmp_path / f"c{i}.h5")
         with H5Cam.create(cp, 2, 8, 8) as c:
-            c.set_rgb([cv2.imencode(".jpg", np.full((8, 8, 3), i + 1, np.uint8))[1].tobytes()] * 2)
+            c.set_rgb_bytes([cv2.imencode(".jpg", np.full((8, 8, 3), i + 1, np.uint8))[1].tobytes()] * 2)
             c.set_meta(dataset="d", scene="s")
         cams.append(cp)
     with H5CamRig.build(p, cams, suffix="v") as rig:

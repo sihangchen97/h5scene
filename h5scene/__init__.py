@@ -43,8 +43,13 @@ axis onto it — written "[N]" where the rig adds one axis):
               h5 = the same scene's cameras; seq is per-camera (the rig has
               none); suffix marks variants — see docs/schema.md
       /meta/src_frame_idxs  int64 (T,) source frame numbers        [optional]
+      /meta/src_frame_ids   utf-8 (T,) STRING source frame ids (tum
+              timestamps / dl3dv paths); unique — the rig has neither     [optional]
+      /meta/timestamps      f64 (T,) source frame timestamps          [optional]
       /meta/tags/*         utf-8 strings (data_type/dynamics/...)  [optional]
-      attrs: is_metric bool (data-side)
+      attrs: file_type str ("h5cam" / "h5camrig" / "h5geo", pinned at
+              create/build; the constructors reject a mismatched tag)
+             is_metric bool (data-side)
              H5Cam:  THW = int64 (T, H, W)
              H5CamRig: TNHW = int64 (T, N, Hmax, Wmax),
                        cam_files = str[] source cam files relative to the
@@ -58,25 +63,45 @@ axis onto it — written "[N]" where the rig adds one axis):
 H5Cam usage:
 
     cam = H5Cam.create(path, T, H, W, is_metric=False)   # create (overwrites)
-    cam.set_rgb(rgb)          # (T,H,W,3) uint8 / (H,W,3) (T=1) / (T,) image bytes / paths
-    cam.set_bgr(bgr)         # (T,H,W,3) / (H,W,3) uint8 BGR ARRAY ONLY (arrays only)
+    # writers are SPLIT BY INPUT KIND (the colour order on disk is unknowable):
+    cam.set_rgb(rgb)          # uint8 RGB ARRAYS only: (T,H,W,3) / (H,W,3) (T=1)
+    cam.set_rgb_bytes(imgs)   # image BYTES (T,): q<=95 cv2 jpgs kept verbatim,
+                              # everything else re-encoded q95
+    cam.set_rgb_paths(paths)  # file PATHS (T,): decoded at read, encoded q95
+    cam.set_bgr(bgr)         # (T,H,W,3) / (H,W,3) uint8 BGR ARRAY ONLY
     cam.set_depth_mm(d_mm); cam.set_depth_meters(d_m)     # unit is in the name
     cam.set_depth_conf_01(c) # (T,h,w) 0-1 float ONLY
     cam.set_mask(m)
-    cam.set_K(K); cam.set_pose_c2w(P)
+    cam.set_K(K); cam.set_pose_c2w(P)   # conventions CHECKED: K pinhole, P c2w
     cam.set_meta(dataset=..., scene=..., seq=..., suffix=..., split=...,
-                 src_frame_idxs=..., tags={...})   # multi-key
+                 src_frame_idxs=..., src_frame_ids=[str...], timestamps=[float...],
+                 tags={...})   # multi-key
+    # per-frame / streaming write (peak memory = one frame):
+    cam.allocate(sections=("img", "depth", "K", "T"))     # pre-create the datasets
+    for t in range(T):
+        cam.write_frame(t, rgb=rgb[t], depth_mm=d[t], K=K, pose_c2w=P)
+    cam.finalize()                     # checks every t was written
+    cam.set_src_frame_ids(["1341846313.553992", ...])    # O(1) index_of(fid) / indices_of(...)
     cam.close()                          # (or: with H5Cam.create(...) as cam: ...)
 
     cam = H5Cam.open(path)               # open an existing file ("r" / "r+")
     cam.shape, cam.is_metric, cam.has(name), cam.sections
-    cam.rgb(t) / cam.bgr(t)             # decoded (H, W, 3) uint8 RGB / BGR (no bytes reader)
+    cam.rgb(t) / cam.bgr(t)             # decoded (H, W, 3) uint8 RGB / BGR
+    cam.img_bytes(t)                    # the stored jpg BYTES, undecoded
     cam.depth_mm(t) / cam.depth_meters(t) / cam.K(t) / cam.pose_c2w(t) / cam.mask(t) / cam.depth_conf(t)
     cam.depth_mask(t, conf_min=...)
     cam.dataset, cam.scene, cam.seq, cam.suffix, cam.split
-    cam.src_frame_idxs, cam.tags
+    cam.src_frame_idxs, cam.src_frame_ids, cam.timestamps, cam.tags
+    cam.index_of(fid) / cam.indices_of([fid, ...])      # only when src_frame_ids set
     cam.set_attr("is_metric", True); cam.attr("THW")     # the base accessors
     cam.set_meta("scene", "x")                          # single-key form (None = remove)
+    d = H5Cam.peek(path)                  # the listing fields WITHOUT the full
+                                          # open validation (file_type / THW /
+                                          # sections / the /meta keys)
+    # CLI: python -m h5scene.verify <file | dir> [--json out.json]   # the
+    # post-conversion check (opens OK, no raw 65535, K/pose conventions,
+    # every img frame decodes at the declared (H, W), src_frame_ids unique);
+    # exit 1 on FAIL
 
 H5CamRig usage:
 
@@ -91,5 +116,6 @@ H5CamRig usage:
 from .h5base import H5Base, MetaSpec
 from .h5cam import H5Cam
 from .h5camrig import H5CamRig
+from .h5geo import H5Geo
 
-__all__ = ["H5Base", "H5Cam", "H5CamRig", "MetaSpec"]
+__all__ = ["H5Base", "H5Cam", "H5CamRig", "H5Geo", "MetaSpec"]

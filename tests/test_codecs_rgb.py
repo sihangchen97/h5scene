@@ -6,7 +6,8 @@ import numpy as np
 import pytest
 
 from h5scene.codecs import (JPG_QUALITY, decode_rgb, encode_rgb, jpeg_hw,
-                           jpeg_quality, normalize_rgb)
+                           jpeg_quality, normalize_img_array,
+                           normalize_img_bytes, normalize_img_paths)
 
 
 def _red(h=8, w=12):
@@ -36,19 +37,19 @@ def test_encode_decode_roundtrip_rgb_order(tmp_path):
 def test_normalize_keeps_low_quality_jpeg_verbatim():
     ok, buf = cv2.imencode(".jpg", _red(), [int(cv2.IMWRITE_JPEG_QUALITY), 50])
     b = bytes(buf.tobytes())
-    _, _, (out,) = normalize_rgb([b])        # q50 <= 95 -> stored as-is
+    _, _, (out,) = normalize_img_bytes([b])        # q50 <= 95 -> stored as-is
     assert out == b
 
 
 def test_normalize_reencodes_over_95_jpeg():
     ok, buf = cv2.imencode(".jpg", _red(), [int(cv2.IMWRITE_JPEG_QUALITY), 100])
     b = bytes(buf.tobytes())
-    _, _, (out,) = normalize_rgb([b])        # q100 > 95 -> re-encoded q95
+    _, _, (out,) = normalize_img_bytes([b])        # q100 > 95 -> re-encoded q95
     assert out != b and jpeg_quality(out) == JPG_QUALITY
 
 
 def test_normalize_reencodes_png(tmp_path):
-    _, _, (out,) = normalize_rgb([_png_bytes(tmp_path, _red())])
+    _, _, (out,) = normalize_img_bytes([_png_bytes(tmp_path, _red())])
     assert jpeg_quality(out) == JPG_QUALITY        # a png became a q95 jpg
     assert decode_rgb(out)[0, 0, 0] > decode_rgb(out)[0, 0, 2]
 
@@ -85,36 +86,36 @@ def test_normalize_kept_frames_are_not_decoded():
     # suffices for the size check) — the bytes are byte-identical
     ok, buf = cv2.imencode(".jpg", _red(8, 12), [int(cv2.IMWRITE_JPEG_QUALITY), 95])
     b = bytes(buf.tobytes())
-    _, _, (out,) = normalize_rgb([b])
+    _, _, (out,) = normalize_img_bytes([b])
     assert out == b                                 # verbatim, not re-encoded
     # a kept frame + a same-size over-95 frame: the second is the only decode
     ok2, buf2 = cv2.imencode(".jpg", _red(8, 12), [int(cv2.IMWRITE_JPEG_QUALITY), 100])
-    _, _, out = normalize_rgb([b, bytes(buf2.tobytes())])
+    _, _, out = normalize_img_bytes([b, bytes(buf2.tobytes())])
     assert out[0] == b and jpeg_quality(out[1]) == JPG_QUALITY
     # different sizes are still a size mismatch, kept or not
     ok3, buf3 = cv2.imencode(".jpg", _red(4, 4), [int(cv2.IMWRITE_JPEG_QUALITY), 95])
     with pytest.raises(ValueError, match="size"):
-        normalize_rgb([b, bytes(buf3.tobytes())])
+        normalize_img_bytes([b, bytes(buf3.tobytes())])
 
 
-def test_normalize_rgb_array():
-    H, W, frames = normalize_rgb(_red(8, 12))
+def test_normalize_img_array():
+    H, W, frames = normalize_img_array(_red(8, 12))
     assert (H, W) == (8, 12) and len(frames) == 1
     assert jpeg_quality(frames[0]) == JPG_QUALITY
 
 
-def test_normalize_rgb_paths(tmp_path):
+def test_normalize_img_paths(tmp_path):
     p = str(tmp_path / "f.png")
     cv2.imwrite(p, cv2.cvtColor(_red(8, 12), cv2.COLOR_RGB2BGR))
-    H, W, frames = normalize_rgb([p])
+    H, W, frames = normalize_img_paths([p])
     assert (H, W) == (8, 12) and len(frames) == 1
 
 
 def test_normalize_rgb_mismatched_sizes_rejected():
     with pytest.raises(ValueError, match="size"):
-        normalize_rgb([encode_rgb(_red(8, 12)), encode_rgb(_red(4, 4))])
+        normalize_img_bytes([encode_rgb(_red(8, 12)), encode_rgb(_red(4, 4))])
 
 
 def test_normalize_rgb_empty_is_a_clear_error():
     with pytest.raises(ValueError, match="empty"):
-        normalize_rgb([])
+        normalize_img_bytes([])

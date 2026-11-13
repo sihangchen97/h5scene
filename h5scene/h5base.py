@@ -40,34 +40,29 @@ _NUM_EQUIV = {bool: (bool, np.bool_),
 
 
 class MetaSpec:
-    """A meta key's declared type (+ optional int64 dtype / axis-0 length "T").
-    Subclasses derive their registries from it:
+    """A meta key's declared type (+ optional array dtype / axis-0 length "T").
+    Array keys declare dtype int64 (src_frame_idxs), float64 (timestamps) or
+    utf-8 str (src_frame_ids) — the ELEMENT types are checked on write, not
+    just the ndarray dtype. Subclasses derive their registries from it:
         META_KEYS = {k: v for k, v in H5Cam.META_KEYS.items()
-                    if k not in ("seq", "src_frame_idxs")}
+                    if k not in ("seq", "src_frame_idxs", "src_frame_ids",
+                                 "timestamps")}
     """
     __slots__ = ("type", "dtype", "length")
 
     def __init__(self, type_, dtype=None, length=None):
         self.type = type_
-        self.dtype = dtype          # int64 for array keys (checked on write)
+        self.dtype = dtype          # int64 / float64 / str array keys
         self.length = length        # axis-0 length; "T" = the scene's T
 
     def check(self, name, value, T=None):
+        if self.dtype is not None:                     # an array key
+            self._check_array(name, value, T)
+            return
         ok = _NUM_EQUIV.get(self.type, (self.type,))
         if not isinstance(value, ok):
             raise TypeError(f"meta {name!r} expects {self.type.__name__}, "
                             f"got {type(value).__name__}")
-        if self.dtype is not None:
-            if not isinstance(value, np.ndarray) or value.dtype != self.dtype:
-                raise TypeError(f"meta {name!r} expects a {np.dtype(self.dtype).name} "
-                                f"array, got {value.dtype}")
-        if self.length is not None:
-            if not isinstance(value, np.ndarray) or value.ndim != 1:
-                raise ValueError(f"meta {name!r} must be a 1-D array")
-            L = T if self.length == "T" else self.length
-            if L is not None and value.shape[0] != L:
-                raise ValueError(f"meta {name!r} must be length {L}, "
-                                 f"got {value.shape[0]}")
         if self.type is dict:                      # a /meta/<name>/ group: str
             if any(not isinstance(k, str) for k in value):
                 raise TypeError(f"meta {name!r} keys must be str")
@@ -75,6 +70,28 @@ class MetaSpec:
                 if not isinstance(v, str):
                     raise TypeError(f"meta {name!r} value {k!r} must be a str, "
                                     f"got {type(v).__name__}")
+
+    def _check_array(self, name, value, T):
+        if not isinstance(value, (list, tuple, np.ndarray)):
+            raise TypeError(f"meta {name!r} expects a "
+                            f"{np.dtype(self.dtype).name} array, "
+                            f"got {type(value).__name__}")
+        kind = np.dtype(self.dtype).kind
+        want = (str,) if kind == "U" else (
+            (int, float, np.integer, np.floating) if kind == "f"
+            else (int, np.integer))
+        for v in value:                              # element types, per value
+            if isinstance(v, bool) or not isinstance(v, want):
+                raise TypeError(f"meta {name!r} expects {np.dtype(self.dtype).name} "
+                                f"elements, got a {type(v).__name__}")
+        a = np.asarray(list(value), dtype=self.dtype)
+        if a.ndim != 1:
+            raise ValueError(f"meta {name!r} must be a 1-D array")
+        if self.length is not None:
+            L = T if self.length == "T" else self.length
+            if L is not None and a.shape[0] != L:
+                raise ValueError(f"meta {name!r} must be length {L}, "
+                                f"got {a.shape[0]}")
 
     def __repr__(self):
         d = f", dtype={np.dtype(self.dtype).name}" if self.dtype else ""
@@ -202,8 +219,13 @@ class H5Base:
                 tg = m.create_group(name)
                 for k, v in value.items():
                     tg.create_dataset(k, data=np.array(v, dtype=_STR))
-            elif isinstance(value, np.ndarray):    # an array key (dtype-checked)
-                m.create_dataset(name, data=value.astype(np.int64))
+            elif isinstance(value, (list, tuple, np.ndarray)):
+                spec = self.META_KEYS[name]        # an array key (dtype-checked)
+                if np.dtype(spec.dtype).kind == "U":
+                    m.create_dataset(name, data=np.array(list(value), dtype=_STR))
+                else:
+                    m.create_dataset(name, data=np.asarray(list(value),
+                                                           dtype=spec.dtype))
             else:                                   # a str key
                 m.create_dataset(name, data=np.array(str(value), dtype=_STR))
             return self

@@ -10,12 +10,17 @@ depth / depth_conf may be < (H, W) (aspect ratio must match); reads resize
 back to (H, W).
 """
 import operator
+import os
+import posixpath
+
+import h5py
 import numpy as np
 
-from .codecs import (FRAME_SHAPE, SECTIONS, broadcast_matrix, conf_frame, depth_hw_ok,
-                     depth_mask as _dm, filter_args, has,
+from .codecs import (FRAME_SHAPE, SECTIONS, broadcast_matrix, check_K, check_pose,
+                     conf_frame, depth_hw_ok, depth_mask as _dm, filter_args, has,
                      is_metric as _is_metric, mm_frame, meters_frame,
-                     normalize_rgb, to_conf, to_mask, to_mm, to_meters_mm)
+                     normalize_img_array, normalize_img_bytes, normalize_img_paths,
+                     to_conf, to_mask, to_mm, to_meters_mm)
 from .codecs.rgb import decode_rgb
 from .h5base import H5Base, MetaSpec
 
@@ -25,26 +30,36 @@ class H5Cam(H5Base):
     file); open requires attrs.THW and, when present, img keys 0..T-1 plus
     consistent section shapes. set_*/read are (T, …) methods on this class."""
 
-    ATTR_KEYS = {"THW": np.ndarray,        # int64 (3,) = (T, H, W)
-                 "is_metric": bool}
+    ATTR_KEYS = {"file_type": str,          # always "h5cam" (pinned at create)
+                  "THW": np.ndarray,        # int64 (3,) = (T, H, W)
+                  "is_metric": bool}
     META_KEYS = {"dataset": MetaSpec(str),        # top-level dataset name
-                 "scene": MetaSpec(str),          # scene id
-                 "seq": MetaSpec(str),            # sequence
-                 "suffix": MetaSpec(str),         # variant marker (train/val, camera/version)
-                 "split": MetaSpec(str),          # train/val split
-                 "src_frame_idxs": MetaSpec(np.ndarray, dtype=np.int64, length="T"),
-                 "tags": MetaSpec(dict)}          # /meta/tags/* utf-8 (str keys and values)
+                  "scene": MetaSpec(str),          # scene id
+                  "seq": MetaSpec(str),            # sequence
+                  "suffix": MetaSpec(str),         # variant marker (train/val, camera/version)
+                  "split": MetaSpec(str),          # train/val split
+                  "src_frame_idxs": MetaSpec(np.ndarray, dtype=np.int64, length="T"),
+                  "src_frame_ids": MetaSpec(str, dtype=np.str_, length="T"),
+                                            # STRING ids (the unit is in the name)
+                  "timestamps": MetaSpec(float, dtype=np.float64, length="T"),
+                  "tags": MetaSpec(dict)}          # /meta/tags/* utf-8 (str keys and values)
 
     def __init__(self, path, mode="r"):
         """Open an existing H5Cam file ("r" or "r+"). Construction goes
         through H5Cam.create — not this."""
         super().__init__(path, mode=mode)
         try:
+            ft = self._h.attrs.get("file_type")
+            if ft is not None and str(ft) != "h5cam":
+                raise ValueError(f"{self.path}: not an H5Cam file "
+                                 f"(attrs.file_type = {ft!r})")
             thw = self.attr("THW")
             if thw is None or "is_metric" not in self._h.attrs:
                 raise ValueError(f"{self.path}: not an H5Cam file "
                                  "(no attrs.THW / is_metric)")
             self.T, self.H, self.W = (int(x) for x in thw)
+            self._fid_index = None              # the src_frame_ids lookup cache
+            self._allocated, self._written = None, set()   # the streaming state
             rg = self._h.get("img")
             if rg is not None and len(rg) and (
                     len(rg) != self.T or any(f"{t}" not in rg for t in range(self.T))):
@@ -72,6 +87,9 @@ class H5Cam(H5Base):
         H5Base.__init__(cam, path, create=True)
         try:
             cam.T, cam.H, cam.W = t, h, w
+            cam._fid_index = None              # the src_frame_ids lookup cache
+            cam._allocated, cam._written = None, set()   # the streaming state
+            cam.set_attr("file_type", "h5cam")
             cam.set_attr("THW", np.array((cam.T, cam.H, cam.W), np.int64))
             cam.set_attr("is_metric", bool(is_metric))
             cam._h.create_group("img")
@@ -84,6 +102,37 @@ class H5Cam(H5Base):
     def open(cls, path, mode="r"):
         """Open an existing file ("r" or "r+")."""
         return cls(path, mode=mode)
+
+    @classmethod
+    def peek(cls, path):
+        """A dict for scene LISTING without the full open validation: file_type,
+        THW, is_metric, sections, dataset, scene, seq, split, src_frame_ids.
+        A file that is not an H5Cam (or is missing) raises ValueError /
+        FileNotFoundError."""
+        import os.path as osp
+        if not osp.exists(path):
+            raise FileNotFoundError(f"no such file: {path}")
+        with h5py.File(str(path), "r") as h:
+            if str(h.attrs.get("file_type", "")) != "h5cam":
+                raise ValueError(f"{path}: not an H5Cam file "
+                                 f"(attrs.file_type = {h.attrs.get('file_type')!r})")
+            thw = h.attrs.get("THW")
+            if thw is None:
+                raise ValueError(f"{path}: not an H5Cam file (no attrs.THW)")
+            m = h.get("meta")
+            out = {"file_type": "h5cam",
+                   "THW": tuple(int(x) for x in thw),
+                   "is_metric": bool(h.attrs.get("is_metric")),
+                   "sections": sorted(n for n in ("img", *SECTIONS) if n in h),
+                   "dataset": None, "scene": None, "seq": None, "split": None,
+                   "src_frame_ids": None}
+            for k in ("dataset", "scene", "seq", "split"):
+                v = m.get(k) if m is not None else None
+                out[k] = v[()].decode() if v is not None else None
+            v = m.get("src_frame_ids") if m is not None else None
+            if v is not None:
+                out["src_frame_ids"] = [x.decode() for x in v[()]]
+            return out
 
     # ---- open-time consistency (#21) ----
     def _check_sections(self):
@@ -158,6 +207,22 @@ class H5Cam(H5Base):
         return self.meta("src_frame_idxs")
 
     @property
+    def src_frame_ids(self):
+        """List[str] of the frames' source ids (/meta/src_frame_ids), or None
+        when unset. STRING ids only (int-like: use src_frame_idxs)."""
+        v = self.meta("src_frame_ids")
+        if v is None:
+            return None
+        if isinstance(v, (bytes, str)):
+            return [v.decode() if isinstance(v, bytes) else v]
+        return [x.decode() if isinstance(x, bytes) else str(x) for x in v]
+
+    @property
+    def timestamps(self):
+        """np.ndarray float64 (T,) of per-frame timestamps, or None."""
+        return self.meta("timestamps")
+
+    @property
     def tags(self):
         return self.meta("tags")
 
@@ -167,22 +232,79 @@ class H5Cam(H5Base):
             return None                             # dense: drop it
         return value
 
+    # ---- src_frame_ids (E1): string frame ids + O(1) lookup ----
+    def set_src_frame_ids(self, ids):
+        """List[str] of the frames' source ids — STRING ids ONLY (the unit is
+        in the name; an int-like array is rejected, use src_frame_idxs),
+        length T, UNIQUE (a duplicate is a ValueError). Row order = time
+        order. Can coexist with src_frame_idxs."""
+        ids = list(ids)
+        for i, x in enumerate(ids):
+            if not isinstance(x, str):
+                raise TypeError(f"src_frame_ids must be strings (int-like: use "
+                                f"src_frame_idxs); element {i} is a {type(x).__name__}")
+        if len(ids) != self.T:
+            raise ValueError(f"src_frame_ids must be length T = {self.T}, "
+                             f"got {len(ids)}")
+        dup = sorted({x for x in ids if ids.count(x) > 1})
+        if dup:
+            raise ValueError(f"src_frame_ids must be unique; duplicates: {dup}")
+        return self.set_meta("src_frame_ids", ids)
+
+    def index_of(self, fid):
+        """The t of a source id: O(1) after the first call (the index is
+        cached). KeyError on an unknown fid; ValueError when no ids are set."""
+        if self._fid_index is None:
+            ids = self.src_frame_ids
+            if ids is None:
+                raise ValueError("no src_frame_ids stored (set_src_frame_ids)")
+            self._fid_index = {x: t for t, x in enumerate(ids)}
+        if fid not in self._fid_index:
+            raise KeyError(f"no frame with id {fid!r}")
+        return self._fid_index[fid]
+
+    def indices_of(self, fids):
+        """[index_of(f) for f in fids] (the cache is shared)."""
+        return [self.index_of(f) for f in fids]
+
     # ---- writers (T semantics; codecs/ owns the encoding policy) ----
+    # img: ONE entry per input kind (arrays / image bytes / file paths)
     def set_rgb(self, rgb):
-        """(T,H,W,3) uint8 RGB array / an (H,W,3) array (T=1) / a flat (T,)
-        image-bytes sequence / file paths; each frame stored as jpg q<=95
-        (the policy in codecs.rgb). The frame COUNT must equal T."""
-        a = np.asarray(rgb)
-        if a.dtype == np.uint8 and a.ndim == 4:           # (T, H, W, 3) -> (T, 1, H, W, 3)
-            rgb = a[:, None]
-        h, w, frames = normalize_rgb(rgb)
+        """a uint8 RGB ARRAY: (T,H,W,3) / an (H,W,3) frame (T=1). Each frame
+        stored as jpg q<=95 (the policy in codecs.rgb). The frame COUNT must
+        equal T. Image BYTES: set_rgb_bytes; FILE PATHS: set_rgb_paths."""
+        self._store_img(normalize_img_array(rgb))
+
+    def set_rgb_bytes(self, frames):
+        """a sequence of image BYTES: flat (T,) (or (T,N) with N=1 for the
+        /img layout). Per-frame policy in codecs.rgb (q<=95 verbatim, else
+        re-encoded q95). Arrays: set_rgb; file paths: set_rgb_paths."""
+        h, w, flat = normalize_img_bytes(frames)
+        if len(flat) % self.T:                          # (T,N): N must be 1
+            raise ValueError(f"rgb bytes must give T={self.T} frames "
+                             f"(T*N), got {len(flat)}")
+        self._store_img((h, w, flat[:self.T]))
+
+    def set_rgb_paths(self, paths):
+        """FILE PATHS (a str/Path or a flat (T,) sequence) read from disk,
+        same per-frame policy as set_rgb_bytes. Arrays: set_rgb; bytes:
+        set_rgb_bytes."""
+        h, w, flat = normalize_img_paths(paths)
+        if len(flat) % self.T:
+            raise ValueError(f"rgb paths must give T={self.T} frames "
+                             f"(T*N), got {len(flat)}")
+        self._store_img((h, w, flat[:self.T]))
+
+    def _store_img(self, hww):
+        """(H, W, frames) -> /img/{0..T-1} (the frame count + size are
+        checked; replace is non-atomic: a mid-loop failure leaves a partial
+        img group — the temp-name+rename swap is a larger change than this
+        call needs)."""
+        h, w, frames = hww
         if len(frames) != self.T:
             raise ValueError(f"rgb gives {len(frames)} frames but T={self.T}")
         if (h, w) != (self.H, self.W):
             raise ValueError(f"rgb size ({h},{w}) != scene ({self.H},{self.W})")
-        # NOTE: replace is non-atomic (old frames deleted, then new ones
-        # written): a mid-loop failure leaves a partial img group. (OCR note; a
-        # temp-name+rename swap would be a larger change than this call needs.)
         rg = self._h.require_group("img")
         for k in list(rg):
             del rg[k]
@@ -192,8 +314,8 @@ class H5Cam(H5Base):
     def set_bgr(self, bgr):
         """(T,H,W,3) uint8 BGR array / an (H,W,3) array (T=1); ARRAYS ONLY
         (image bytes / file paths are rejected — the colour order on disk is
-        unknowable, use set_rgb). Channels reversed to RGB, then stored
-        through the set_rgb policy (jpg q<=95)."""
+        unknowable, use set_rgb / set_rgb_bytes / set_rgb_paths). Channels
+        reversed to RGB, then stored through the set_rgb policy (jpg q<=95)."""
         a = np.asarray(bgr)
         if a.dtype != np.uint8:
             raise TypeError(f"set_bgr wants a uint8 BGR array, got {a.dtype.name}")
@@ -244,22 +366,34 @@ class H5Cam(H5Base):
         self.write_section("mask", m, chunks=(1, self.H, self.W), **filter_args("mask"))
 
     def set_K(self, K):
-        """(3,3) broadcast or (T, 3, 3) float; stored raw (no gzip — measured
-        bigger with gzip for short sequences, break-even ~106 frames)."""
-        self.write_section("K", broadcast_matrix(K, self.T, (3, 3)))
+        """(3,3) broadcast or (T, 3, 3) float OpenCV PINHOLE intrinsics
+        (K[2,2] == 1, zero skew / K[1,0] / K[2,1] / K[2,0], fx, fy > 0 —
+        check_K in codecs.pose; a pixel (u, v) centre is at (u, v)). Stored
+        raw (no gzip — measured bigger with gzip for short sequences,
+        break-even ~106 frames)."""
+        self.write_section("K", check_K(broadcast_matrix(K, self.T, (3, 3))))
 
     def set_pose_c2w(self, pose_c2w):
-        """(4,4) broadcast or (T, 4, 4) float camera-to-world (c2w) poses;
-        stored raw (no gzip)."""
-        self.write_section("T", broadcast_matrix(pose_c2w, self.T, (4, 4)))
+        """(4,4) broadcast or (T, 4, 4) float camera-to-world (c2w) poses,
+        x right / y down / z forward (last row [0,0,0,1], orthonormal R with
+        |det R - 1| <= 1e-3 — check_pose in codecs.pose). Stored raw."""
+        self.write_section("T", check_pose(broadcast_matrix(pose_c2w, self.T, (4, 4))))
 
     # ---- reads (T semantics; codecs/ owns the decoding policy) ----
     def rgb(self, t=0):
-        """Frame t decoded: (H, W, 3) uint8 RGB (no bytes-level reader)."""
+        """Frame t decoded: (H, W, 3) uint8 RGB."""
         self._t(t)
         if not self.has("img"):
             raise KeyError("no img frames")
-        return decode_rgb(self._h["img"][f"{t}"][:].tobytes())
+        return decode_rgb(self.img_bytes(t))
+
+    def img_bytes(self, t=0):
+        """Frame t's stored jpg BYTES, undecoded (E4; cv2.imdecode(...,
+        IMREAD_COLOR) reversed to RGB equals rgb(t))."""
+        self._t(t)
+        if not self.has("img"):
+            raise KeyError("no img frames")
+        return self._h["img"][f"{t}"][:].tobytes()
 
     def bgr(self, t=0):
         """Frame t decoded as (H, W, 3) uint8 BGR (a channel-reversed copy of
@@ -370,3 +504,148 @@ class H5Cam(H5Base):
         if not self.has(name):
             raise KeyError(f"no {name} section")
         return self._h[name][t][:]
+
+    # ---- per-frame / streaming write (eval request E5) ------------------------
+    def allocate(self, sections=("depth", "K", "T"), depth_hw=None):
+        """Pre-create the named sections ('img' or a SECTIONS name) for
+        per-frame writing: write_frame(t, ...) then finalize(). A section
+        already stored (a set_* ran) must be del_section()'d first; the
+        img group is only marked (its per-frame datasets are created on
+        write_frame). depth_hw: (h, w) for depth / depth_conf (default:
+        the scene (H, W))."""
+        if self._allocated is not None:
+            raise ValueError("already allocated (write_frame / finalize)")
+        names = list(sections)
+        for name in names:
+            if name == "img":
+                continue
+            if name not in SECTIONS:
+                raise ValueError(f"unknown section {name!r}; known: "
+                                 f"('img', {', '.join(repr(n) for n in SECTIONS)})")
+            if name in self._h:
+                raise ValueError(f"{name} is already stored: del_section "
+                                 f"before allocate")
+        self._allocated = set(names)
+        self._written = {n: set() for n in names}
+        for name in names:
+            if name == "img":
+                continue
+            s = SECTIONS[name]
+            if s.frame2d:
+                hw = depth_hw if depth_hw is not None else (self.H, self.W)
+                if not depth_hw_ok(*hw, self.H, self.W):
+                    raise ValueError(f"depth_hw {hw} incompatible with scene "
+                                     f"({self.H},{self.W}): aspect ratio must match")
+                h_, w_ = hw
+            else:
+                h_, w_ = FRAME_SHAPE[name]
+            self._h.create_dataset(name, shape=(self.T, h_, w_), dtype=s.dtype,
+                                   fillvalue=s.fillvalue,
+                                   chunks=(1, h_, w_), **filter_args(name))
+
+    def write_frame(self, t, rgb=None, depth_mm=None, depth_meters=None,
+                    depth_conf=None, mask=None, K=None, pose_c2w=None):
+        """Write ONE frame into the allocated sections (allocate first):
+        the frame's rgb (an (H,W,3) uint8 array or its jpg bytes) and / or
+        depth_mm | depth_meters (one of the two — the unit is in the name),
+        depth_conf (0-1 float), mask, K ((3,3) pinhole-checked), pose_c2w
+        ((4,4) c2w-checked) — same rules as the set_* methods, one frame at
+        a time (peak memory is O(one frame)). A section not allocated raises."""
+        if self._allocated is None:
+            raise ValueError("allocate(sections=...) before write_frame")
+        self._t(t)
+        if any(t in s for s in self._written.values()):
+            raise ValueError(f"frame {t} already written (it cannot be "
+                             f"written twice)")
+        wrote = False
+        if rgb is not None:
+            self._require_allocated("img")
+            h, w, flat = (normalize_img_bytes([bytes(rgb)])
+                          if isinstance(rgb, (bytes, bytearray, memoryview))
+                          else normalize_img_array(rgb))
+            if (h, w) != (self.H, self.W):
+                raise ValueError(f"rgb size ({h},{w}) != scene ({self.H},{self.W})")
+            self._h.require_group("img").create_dataset(
+                f"{t}", data=np.frombuffer(flat[0], np.uint8))
+            self._written["img"].add(t)
+            wrote = True
+        if depth_mm is not None and depth_meters is not None:
+            raise ValueError("write_frame takes one of depth_mm / depth_meters "
+                             "(the unit is in the name) — not both")
+        if depth_mm is not None:
+            self._require_allocated("depth")
+            a = np.asarray(depth_mm, dtype=np.uint16)
+            d = to_mm(a[None] if a.ndim == 2 else a)
+            self._write_frame_data("depth", t, d)
+            wrote = True
+        elif depth_meters is not None:
+            self._require_allocated("depth")
+            a = np.asarray(depth_meters, dtype=np.float64)
+            d = to_meters_mm(a[None] if a.ndim == 2 else a)
+            self._write_frame_data("depth", t, d)
+            wrote = True
+        if depth_conf is not None:
+            self._require_allocated("depth_conf")
+            a = np.asarray(depth_conf, dtype=np.float64)
+            c = to_conf(a[None] if a.ndim == 2 else a)
+            self._write_frame_data("depth_conf", t, c)
+            wrote = True
+        if mask is not None:
+            self._require_allocated("mask")
+            a = np.asarray(mask)
+            if a.ndim == 2:
+                if a.shape != (self.H, self.W):
+                    raise ValueError(f"mask frame must be (H, W) = "
+                                     f"({self.H},{self.W}), got {a.shape}")
+                m = to_mask(a[None], 1, self.H, self.W)
+            elif a.ndim == 3 and a.shape[0] == 1:
+                m = to_mask(a, 1, self.H, self.W)
+            else:
+                raise ValueError(f"mask frame must be (H, W) or (1, H, W), "
+                                 f"got {a.shape}")
+            self._write_frame_data("mask", t, m)
+            wrote = True
+        if K is not None:
+            self._require_allocated("K")
+            self._h["K"][t] = check_K(np.asarray(K, dtype=np.float32))
+            self._written["K"].add(t)
+            wrote = True
+        if pose_c2w is not None:
+            self._require_allocated("T")
+            self._h["T"][t] = check_pose(np.asarray(pose_c2w, dtype=np.float32))
+            self._written["T"].add(t)
+            wrote = True
+        if not wrote:
+            raise ValueError("write_frame got nothing to write (pass at least "
+                             "one of rgb / depth_mm / depth_meters / depth_conf / "
+                             "mask / K / pose_c2w)")
+
+    def _require_allocated(self, name):
+        if name not in self._allocated:
+            raise ValueError(f"section {name!r} is not allocated "
+                             f"(allocate(sections=...))")
+
+    def _write_frame_data(self, name, t, d1):
+        """one (1, h, w) converted frame row into an allocated dataset"""
+        d = self._h[name]
+        h_, w_ = d.shape[1:]
+        if d1.shape[1:] != (h_, w_):
+            raise ValueError(f"{name} frame shape {d1.shape[1:]} != allocated "
+                             f"({h_},{w_})")
+        d[t] = d1[0]
+        self._written[name].add(t)
+
+    def finalize(self):
+        """Check that every t was written into every allocated section (a
+        skipped t raises); clears the streaming state (the file is then
+        plain set_*/read-able)."""
+        if self._allocated is None:
+            raise ValueError("nothing was allocated")
+        missing = {n: sorted(set(range(self.T)) - s)
+                   for n, s in self._written.items() if s != set(range(self.T))}
+        if missing:
+            raise ValueError(f"frames not written: "
+                             + "; ".join(f"{n}: {s[:5]}{' …' if len(s) > 5 else ''}"
+                                         for n, s in sorted(missing.items())))
+        self._allocated, self._written = None, set()
+        return self

@@ -17,6 +17,8 @@ dependencies = [
 [project.optional-dependencies]
 test = ["pytest"]
 imgtest = ["scikit-image>=0.26,<0.27", "pillow>=13,<14"]
+# hdf5plugin (zstd / blosc / lz4 filters) — the C8 "info only" experiment only
+plugin = ["hdf5plugin>=4"]
 
 [tool.setuptools.packages.find]
 include = ["h5scene*"]
@@ -32,6 +34,7 @@ h5scene = { path = ".", editable = true }
 default = { solve-group = "default" }
 test = { features = ["test"], solve-group = "default" }
 imgtest = { features = ["imgtest"], solve-group = "default" }
+plugin = { features = ["plugin"], solve-group = "default" }
 
 # a FEATURE task: 'pixi run test' resolves to the test env (which has pytest);
 # a workspace task would run it in the default env, which has no pytest.
@@ -40,5 +43,7 @@ test = "python -m pytest tests/ -q"
 
 [tool.pixi.tasks]
 smoke-img = "pixi run -e imgtest python tests/smoke_image_formats.py"
+smoke-geo = "python tests/smoke_geo_compression.py"
+smoke-plugin = "pixi run -e plugin python tests/smoke_hdf5plugin_compression.py"
 
 [tool.pixi.dependencies]

@@ -2,7 +2,8 @@
 
 - rgb.py     — jpg q<=95 encoding + cv2 colour-order boundary (public API is
                RGB; cv2's BGR is converted at encode/decode) + DQT quality
-               detection + rgb input normalization (array / bytes / paths).
+               detection + rgb input normalization, ONE entry per input kind
+               (normalize_img_array / _bytes / _paths).
 - depth.py   — mm-only / meters-only conversion (the unit is fixed by the
                entry point, never guessed from the dtype), the 0/65535 sentinel
                rules, the (h,w) aspect-ratio + resize rules, depth_conf,
@@ -13,17 +14,20 @@
                the H5Cam writers, the rig's VDS build, and the tests.
 """
 from .rgb import (JPG_QUALITY, decode_rgb, encode_rgb, jpeg_dqt_tables,
-                  jpeg_hw, jpeg_quality, normalize_rgb)
+                  jpeg_hw, jpeg_quality, normalize_img_array, normalize_img_bytes,
+                  normalize_img_paths)
 from .depth import (MM_MAX, conf_frame, depth_hw_ok, depth_mask, meters_frame,
                     mm_frame, to_conf, to_mask, to_mm, to_meters_mm)
-from .pose import broadcast_matrix
-from .sections import FRAME_SHAPE, SECTIONS, Spec, filter_args, has, is_metric
+from .pose import broadcast_matrix, check_K, check_pose
+from .sections import (CUSTOM_DTYPES, FRAME_SHAPE, GEO_ATTRS, GeoSpec,
+                      SECTIONS, Spec, filter_args, geo_chunks, has, is_metric)
 
 __all__ = [
     "JPG_QUALITY", "decode_rgb", "encode_rgb", "jpeg_dqt_tables", "jpeg_quality",
-    "jpeg_hw", "normalize_rgb",
+    "jpeg_hw", "normalize_img_array", "normalize_img_bytes", "normalize_img_paths",
     "MM_MAX", "conf_frame", "depth_hw_ok", "depth_mask", "meters_frame", "mm_frame",
     "to_conf", "to_mask", "to_mm", "to_meters_mm",
-    "broadcast_matrix",
+    "broadcast_matrix", "check_K", "check_pose",
     "FRAME_SHAPE", "SECTIONS", "Spec", "filter_args", "has", "is_metric",
+    "CUSTOM_DTYPES", "GEO_ATTRS", "GeoSpec", "geo_chunks",
 ]

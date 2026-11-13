@@ -10,7 +10,7 @@ import numpy as np
 import h5py
 import pytest
 
-from h5scene import H5Cam  # noqa: E402
+from h5scene import H5Cam, H5Geo  # noqa: E402
 
 PROBES = Path(__file__).resolve().parent / "probes"
 DEPTH_PROBE = PROBES / "adt_work_skeleton_seq137" / "frame6_depth_mm.npy"
@@ -127,3 +127,55 @@ def test_rgb_stored_jpg95_smaller_than_png_and_lossy(tmp_path):
     dec = cv2.imdecode(np.frombuffer(stored, np.uint8), cv2.IMREAD_COLOR)
     assert np.abs(dec.astype(int) - img.astype(int)).max() > 0, \
         "rgb encoding is lossless now (expected jpg q95)"
+
+
+# ---- H5Geo (static geometry): the sweep in tests/probes/geo/README.md -------
+# run 2026-11-13 on the 5 sample plys; projected 43-scene total 811 MB < 1.8 GB.
+# Owner decision: every multi-byte attribute (P, N, ptnum) keeps gzip4 + shuffle
+# (the C1 pick) for consistency with /depth, although the sweep measured
+# gzip6+sh marginally faster for P/N — recorded in tests/probes/geo/README.md.
+# Cd: gzip4, NO shuffle (1-byte: the byte-permute has nothing to split).
+# Chunks: 262144 rows for the point attributes, 65536 for ptnum.
+
+def _geo_scene(tmp_path, with_n=True, with_topology=True):
+    rng = np.random.default_rng(0)
+    M = 300000
+    out = str(tmp_path / "geo.h5")
+    g = H5Geo.create(out, rng.random((M, 3), dtype=np.float32))
+    g.set_Cd(rng.integers(0, 256, (M, 3)).astype(np.uint8))
+    if with_n:
+        g.set_N(rng.random((M, 3), dtype=np.float32))
+    if with_topology:
+        g.set_triangles(np.array([[i, i + 1, i + 2] for i in range(M - 2)]))
+    return g, out
+
+
+def test_geo_P_N_ptnum_gzip_shuffle(tmp_path):
+    """Multi-byte geometry attributes: gzip4 + shuffle on disk (owner decision:
+    kept consistent with /depth and the library convention, although the sweep
+    measured gzip6+sh marginally faster for P/N — tests/probes/geo/README.md)."""
+    g, out = _geo_scene(tmp_path)
+    g.close()
+    with h5py.File(out) as h:
+        for key in ("points/P", "points/N", "vertices/ptnum"):
+            d = h[key]
+            assert d.compression == "gzip" and d.compression_opts == 4, key
+            assert d.shuffle is True, key
+    # and the pinned chunk rows (262144 points / 65536 ptnum)
+    with h5py.File(out) as h:
+        assert h["points/P"].chunks == (262144, 3)
+        assert h["vertices/ptnum"].chunks == (65536,)
+
+
+def test_geo_Cd_gzip_no_shuffle(tmp_path):
+    """uint8 point colours: plain gzip4, NO shuffle (1 byte/value: the
+    byte-permute filter has nothing to split — the same reasoning as 'mask';
+    measured identical-or-worse size with shuffle, tests/probes/geo/README.md)."""
+    g, out = _geo_scene(tmp_path)
+    g.close()
+    with h5py.File(out) as h:
+        d = h["points/Cd"]
+        assert d.compression == "gzip" and d.compression_opts == 4
+        assert d.shuffle is False
+        assert d.dtype == np.uint8
+        assert d.chunks == (262144, 3)

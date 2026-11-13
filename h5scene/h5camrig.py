@@ -62,17 +62,19 @@ class H5CamRig(H5Base):
     (T, N) methods
     on this class, built on the codecs/ decode helpers."""
 
-    # (name -> expected type); the rig has NO "seq" and NO "src_frame_idxs" —
-    # it IS the merged time axis (the cameras' per-source frame numbers have
-    # no single meaning for the merged axis). META_KEYS is DERIVED from
-    # H5Cam's (the source camera's registry): cam keys minus "seq" and
-    # "src_frame_idxs"; the "suffix" is H5Cam's own.
-    ATTR_KEYS = {"TNHW": np.ndarray,       # int64 (4,) = (T, N, Hmax, Wmax)
-                 "is_metric": bool,
-                 "cam_files": np.ndarray,  # str[] source cam files, relative to the rig
-                 "cam_hw": np.ndarray}     # int64 (N, 2) per-camera (H, W)
+    # (name -> expected type); the rig has NO "seq" and NO "src_frame_idxs" /
+    # "src_frame_ids" / "timestamps" — it IS the merged time axis (the
+    # cameras' per-source frame numbers have no single meaning for the merged
+    # axis). META_KEYS is DERIVED from H5Cam's (the source camera's registry):
+    # cam keys minus those; the "suffix" is H5Cam's own.
+    ATTR_KEYS = {"file_type": str,          # always "h5camrig" (pinned at build)
+                  "TNHW": np.ndarray,       # int64 (4,) = (T, N, Hmax, Wmax)
+                  "is_metric": bool,
+                  "cam_files": np.ndarray,  # str[] source cam files, relative to the rig
+                  "cam_hw": np.ndarray}     # int64 (N, 2) per-camera (H, W)
     META_KEYS = {k: v for k, v in H5Cam.META_KEYS.items()
-                 if k not in ("seq", "src_frame_idxs")}   # the suffix is already there
+                  if k not in ("seq", "src_frame_idxs", "src_frame_ids",
+                               "timestamps")}   # the suffix is already there
 
     @classmethod
     def build(cls, out_path, cam_paths, suffix=""):
@@ -95,6 +97,10 @@ class H5CamRig(H5Base):
         super().__init__(out_path, mode=mode)
         try:
             a = self._h
+            ft = a.attrs.get("file_type")
+            if ft is not None and str(ft) != "h5camrig":
+                raise ValueError(f"{self.path}: not an H5CamRig file "
+                                 f"(attrs.file_type = {ft!r})")
             if any(k not in a.attrs for k in
                    ("TNHW", "cam_files", "cam_hw", "is_metric")):
                 raise ValueError(f"{self.path}: not an H5CamRig file "
@@ -204,6 +210,14 @@ class H5CamRig(H5Base):
         if not self.has(name):
             raise KeyError(f"no {name} section")
         return self._h[name][t, n][:]
+
+    def img_bytes(self, t=0, n=0):
+        """Frame (t, n)'s stored jpg BYTES, undecoded (E4; cv2.imdecode(...,
+        cv2.IMREAD_COLOR)[:, :, ::-1] decodes them as RGB)."""
+        self._t(t, n)
+        if not self.has("img"):
+            raise KeyError("no img frames")
+        return bytes(self._h["img"][f"{t}_{n}"][:].tobytes())
 
     def rgb(self, t=0, n=0):
         """Frame (t, n) decoded: camera n's NATIVE (H, W, 3) uint8 RGB (the
@@ -394,6 +408,7 @@ class H5CamRig(H5Base):
         # sections, never the file size or mtime).
         d = osp.dirname(rig.path) or "."
         relp = [osp.relpath(p, d) for p in absp]
+        rig.set_attr("file_type", "h5camrig")
         rig.set_attr("TNHW", np.array((T, N, H, W), np.int64))
         rig.set_attr("is_metric", is_metric)
         rig.set_attr("cam_files", np.array(relp, dtype=_STR))

@@ -18,7 +18,7 @@ def _cam(path, T, H, W, seed, scene="s", depth_hw=None):
         for t in range(T):
             img = np.full((H, W, 3), (t * 7 + seed) % 250, np.uint8)
             b.append(encode_rgb(img))               # store as proper RGB jpg
-        cam.set_rgb(b)
+        cam.set_rgb_bytes(b)
         hh, ww = depth_hw if depth_hw is not None else (H, W)
         d = np.broadcast_to((1.0 + np.arange(T) / 10.0)[:, None, None], (T, hh, ww))
         cam.set_depth_meters(d.astype(np.float32).copy())
@@ -34,7 +34,7 @@ def test_rig_reads_each_t_not_frame0(tmp_path):
     a = _cam(str(tmp_path / "a.h5"), T, 48, 96, seed=1)
     b = str(tmp_path / "b.h5")                      # the smaller camera: distinct depth per frame
     with H5Cam.create(b, T, 32, 96) as c:
-        c.set_rgb([encode_rgb(np.full((32, 96, 3), 9, np.uint8))] * T)
+        c.set_rgb_bytes([encode_rgb(np.full((32, 96, 3), 9, np.uint8))] * T)
         c.set_depth_meters(np.stack([np.full((32, 96), m) for m in (1.0, 2.0, 3.0)]))
         c.set_meta(dataset="syn", scene="s", seq="qb")
     out = str(tmp_path / "rig.h5")
@@ -61,7 +61,7 @@ def test_rgb_colour_roundtrip_from_file(tmp_path):
     p = str(tmp_path / "red.png")
     cv2.imwrite(p, cv2.cvtColor(red, cv2.COLOR_RGB2BGR))   # write a red png
     with H5Cam.create(str(tmp_path / "c.h5"), 1, 8, 8) as cam:
-        cam.set_rgb([p])
+        cam.set_rgb_paths([p])
     with H5Cam.open(str(tmp_path / "c.h5")) as cam:
         got = cam.rgb(0)
     assert int(got[0, 0, 0]) > 200 and int(got[0, 0, 2]) < 60, \
@@ -87,8 +87,8 @@ def test_failed_build_preserves_output(tmp_path):
 def test_rgb_frame_count_mismatch(tmp_path):
     """#3: writing fewer frames than T must fail at write time, not at reopen."""
     with H5Cam.create(str(tmp_path / "c.h5"), 3, 8, 8) as cam:
-        with pytest.raises(ValueError, match="but T=3"):
-            cam.set_rgb([encode_rgb(np.zeros((8, 8, 3), np.uint8))] * 2)
+        with pytest.raises(ValueError, match="T=3"):
+            cam.set_rgb_bytes([encode_rgb(np.zeros((8, 8, 3), np.uint8))] * 2)
 
 
 def test_set_meta_type_error_does_not_erase(tmp_path):
@@ -113,7 +113,7 @@ def test_rig_open_detects_rewritten_camera(tmp_path):
     # rewrite camera b with a different T (different content THW)
     b2 = str(tmp_path / "b.h5")
     with H5Cam.create(b2, 5, 32, 64) as c:            # different T -> different content THW
-        c.set_rgb([encode_rgb(np.zeros((32, 64, 3), np.uint8))] * 5)
+        c.set_rgb_bytes([encode_rgb(np.zeros((32, 64, 3), np.uint8))] * 5)
         c.set_meta(dataset="syn", scene="s")
     with pytest.raises((ValueError, FileNotFoundError)):
         H5CamRig.open(out)
@@ -154,12 +154,12 @@ def test_depth_boundary_65_535m_is_invalid_both_ways(tmp_path):
 def test_empty_rgb_sequence_is_a_clear_error(tmp_path):
     """OCR: an empty rgb input must fail with a clear error, not silently
     return (None, None, ()) and crash far downstream."""
-    from h5scene.codecs import normalize_rgb
+    from h5scene.codecs import normalize_img_bytes
     with pytest.raises(ValueError, match="empty"):
-        normalize_rgb([])
+        normalize_img_bytes([])
     with H5Cam.create(str(tmp_path / "c.h5"), 3, 8, 8) as cam:
         with pytest.raises(ValueError, match="empty"):
-            cam.set_rgb([])
+            cam.set_rgb_bytes([])
 
 
 def test_set_meta_is_not_overridden(tmp_path):
@@ -297,7 +297,7 @@ def test_rig_survives_cp_and_moves_with_cameras(tmp_path):
         assert int(rig.depth_mm(2, 0)[0, 0]) == 1200   # VDS reads the real data
     # a rewritten camera (different T -> different THW content) must be caught
     with H5Cam.create(str(moved / "b.h5"), 5, 32, 64) as c:
-        c.set_rgb([encode_rgb(np.zeros((32, 64, 3), np.uint8))] * 5)
+        c.set_rgb_bytes([encode_rgb(np.zeros((32, 64, 3), np.uint8))] * 5)
         c.set_meta(dataset="syn", scene="s")
     with pytest.raises((ValueError, FileNotFoundError)):
         H5CamRig.open(str(moved / "rig.h5"))
