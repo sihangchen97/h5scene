@@ -140,7 +140,7 @@ def _normalize_frames(flat):
 
 
 def _frames_from_bytes(frames):
-    """a sequence of image bytes (T,) / (T,N,) -> a flat tuple of bytes."""
+    """a flat (T,) sequence of image bytes -> a tuple of bytes."""
     if isinstance(frames, (list, tuple)) and len(frames) == 0:
         raise ValueError("rgb bytes is an empty frame sequence (no frames to store)")
     a = np.asarray(frames)
@@ -148,33 +148,27 @@ def _frames_from_bytes(frames):
         a = a.astype(object)
     if a.dtype != object:
         raise ValueError(f"rgb bytes must be a sequence of image bytes, got dtype {a.dtype}")
-    if a.ndim == 1:
-        return tuple(bytes(b) for b in a)
-    if a.ndim == 2:
-        return tuple(bytes(a[t, n]) for t in range(a.shape[0]) for n in range(a.shape[1]))
-    raise ValueError(f"rgb bytes must be a flat (T,) or (T,N) sequence, got ndim={a.ndim}")
+    if a.ndim != 1:
+        raise ValueError(f"rgb bytes must be a flat (T,) sequence, got ndim={a.ndim}")
+    return tuple(bytes(b) for b in a)
 
 
 def normalize_img_array(rgb):
-    """a uint8 RGB ARRAY (T,N,H,W,3) / (T,H,W,3) / an (H,W,3) frame (T=1, N=1)
-    -> (H, W, frames (T*N,) jpg q95). ARRAYS ONLY (image bytes / file paths:
+    """a uint8 RGB ARRAY (T,H,W,3) / an (H,W,3) frame (T=1)
+    -> (H, W, frames (T,) jpg q95). ARRAYS ONLY (image bytes / file paths:
     the normalize_img_bytes / normalize_img_paths entries)."""
     a = np.asarray(rgb)
     if a.dtype != np.uint8:
         raise TypeError(f"rgb must be a uint8 RGB array, got {a.dtype.name}")
     if a.ndim == 3:
-        a = a[None, None]
-    elif a.ndim == 4:
-        a = a[:, None]
-    if a.ndim != 5 or a.shape[4] != 3:
-        raise ValueError(f"rgb array must be (T,N,H,W,3), (T,H,W,3) or (H,W,3), got {a.shape}")
-    T, N, H, W = a.shape[:4]
-    flat = tuple(encode_rgb(a[t, n]) for t in range(T) for n in range(N))
-    return H, W, flat
+        a = a[None]
+    if a.ndim != 4 or a.shape[3] != 3:
+        raise ValueError(f"rgb array must be (T,H,W,3) or (H,W,3), got {a.shape}")
+    return a.shape[1], a.shape[2], tuple(encode_rgb(f) for f in a)
 
 
 def normalize_img_bytes(frames):
-    """a sequence of image BYTES (T,) / (T,N,) -> (H, W, frames (T*N,), all
+    """a flat (T,) sequence of image BYTES -> (H, W, frames (T,), all
     jpg q<=95): the per-frame policy above (q<=95 verbatim, else re-encoded
     q95). BYTES ONLY (arrays / file paths: the other entries). An empty
     sequence is a clear error."""
@@ -182,8 +176,8 @@ def normalize_img_bytes(frames):
 
 
 def normalize_img_paths(paths):
-    """FILE PATHS (a str/Path, or a flat (T,) / (T,N) sequence) read from disk
-    -> (H, W, frames (T*N,), all jpg q<=95, the same per-frame policy as
+    """FILE PATHS (a str/Path, or a flat (T,) sequence) read from disk
+    -> (H, W, frames (T,), all jpg q<=95, the same per-frame policy as
     normalize_img_bytes). PATHS ONLY (arrays / bytes: the other entries). An
     empty path sequence is a clear error."""
     a = np.asarray(paths)
@@ -193,13 +187,9 @@ def normalize_img_paths(paths):
         a.dtype == object and a.size > 0 and isinstance(a.flat[0], (str, os.PathLike)))
     if not is_paths:
         raise ValueError(f"rgb paths must be file paths, got dtype {a.dtype}")
-    if a.ndim == 1:
-        flat = tuple(Path(str(a[i])).read_bytes() for i in range(a.size))
-    elif a.ndim == 2:
-        flat = tuple(Path(str(a[t, n])).read_bytes()
-                     for t in range(a.shape[0]) for n in range(a.shape[1]))
-    else:
-        raise ValueError(f"rgb paths must be flat (T,) or (T,N), got ndim={a.ndim}")
+    if a.ndim != 1:
+        raise ValueError(f"rgb paths must be a flat (T,) sequence, got ndim={a.ndim}")
+    flat = tuple(Path(str(x)).read_bytes() for x in a)
     if not flat:
         raise ValueError("rgb paths is an empty frame sequence (no frames to store)")
     return _normalize_frames(flat)

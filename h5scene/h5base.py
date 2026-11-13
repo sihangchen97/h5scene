@@ -9,10 +9,11 @@ base has none:
     META_KEYS = {name: MetaSpec, …}  # checked by meta() / set_meta()
 the declared type is checked via isinstance (numpy equivalents of the scalar
 types are accepted: np.bool_ for bool, np.integer for int, …); array keys
-carry a MetaSpec(type, dtype=int64, length="T") that also checks dtype and
-axis-0 length. (H5Cam and H5CamRig each define what their file actually
+carry a MetaSpec(type, dtype=…, length="T") that also checks dtype and
+axis-0 length (int64 src_frame_idxs, float64 timestamps, utf-8 str
+src_frame_ids). (H5Cam and H5CamRig each define what their file actually
 holds — e.g. the rig has no "seq"; its registry is DERIVED from H5Cam's:
-cam keys minus "seq" and "src_frame_idxs").
+cam keys minus "seq" / "src_frame_idxs" / "src_frame_ids" / "timestamps").
 
 Nothing scene-specific — no shape: the axis convention (T,H,W vs
 T,N,Hmax,Wmax) and the section semantics live on the subclasses, which build
@@ -118,7 +119,8 @@ class H5Base:
     # name -> MetaSpec (type + optional dtype / axis-0 length). Each subclass
     # declares its own, or derives from another:
     #     META_KEYS = {k: v for k, v in H5Cam.META_KEYS.items()
-    #                  if k not in ("seq", "src_frame_idxs")}
+    #                  if k not in ("seq", "src_frame_idxs", "src_frame_ids",
+    #                               "timestamps")}
     ATTR_KEYS = {}
     META_KEYS = {}
 
@@ -198,8 +200,7 @@ class H5Base:
           - set_meta(dataset=…, scene=…, …): a multi-key convenience — set
             the given keys, leave the rest as-is (a keyword given as None
             means "do not touch"; for a single key, None = remove).
-        Mixing both forms (a positional name AND keywords) raises — it used
-        to silently drop the keywords. Every value is validated BEFORE the
+        Mixing both forms (a positional name AND keywords) raises. Every value is validated BEFORE the
         first write (a bad second key never leaves the first one written)."""
         if name is not None:                        # single-key form
             if kw:
@@ -208,6 +209,7 @@ class H5Base:
             if name not in self.META_KEYS:
                 raise ValueError(f"unknown meta key {name!r}; known: {tuple(self.META_KEYS)}")
             if value is not None:                   # validate first
+                value = self._meta_check(name, value)   # subclass guard (clearer message)
                 self.META_KEYS[name].check(name, value, T=getattr(self, "T", None))
             value = self._meta_value(name, value)  # subclass transform (None = drop)
             m = self._h.require_group("meta")
@@ -236,12 +238,18 @@ class H5Base:
                 continue
             if k not in self.META_KEYS:
                 raise ValueError(f"unknown meta key {k!r}; known: {tuple(self.META_KEYS)}")
+            self._meta_check(k, v)                 # subclass guard (clearer message)
             self.META_KEYS[k].check(k, v, T=getattr(self, "T", None))
         for name, value in kw.items():
             if value is None:
                 continue
             self.set_meta(name, value)             # recurse: single-key form
         return self
+
+    # ---- subclass hook: extra validation of a value that passed the
+    #    MetaSpec (H5Cam: src_frame_ids uniqueness) ----
+    def _meta_check(self, name, value):
+        return value
 
     # ---- subclass hook: transform a validated value (None = drop, e.g. H5Cam
     #    does not store a dense src_frame_idxs) ----

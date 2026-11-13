@@ -10,8 +10,7 @@ depth / depth_conf may be < (H, W) (aspect ratio must match); reads resize
 back to (H, W).
 """
 import operator
-import os
-import posixpath
+import os.path as osp
 
 import h5py
 import numpy as np
@@ -50,7 +49,7 @@ class H5Cam(H5Base):
         super().__init__(path, mode=mode)
         try:
             ft = self._h.attrs.get("file_type")
-            if ft is not None and str(ft) != "h5cam":
+            if ft is None or str(ft) != "h5cam":
                 raise ValueError(f"{self.path}: not an H5Cam file "
                                  f"(attrs.file_type = {ft!r})")
             thw = self.attr("THW")
@@ -109,7 +108,6 @@ class H5Cam(H5Base):
         THW, is_metric, sections, dataset, scene, seq, split, src_frame_ids.
         A file that is not an H5Cam (or is missing) raises ValueError /
         FileNotFoundError."""
-        import os.path as osp
         if not osp.exists(path):
             raise FileNotFoundError(f"no such file: {path}")
         with h5py.File(str(path), "r") as h:
@@ -117,12 +115,13 @@ class H5Cam(H5Base):
                 raise ValueError(f"{path}: not an H5Cam file "
                                  f"(attrs.file_type = {h.attrs.get('file_type')!r})")
             thw = h.attrs.get("THW")
-            if thw is None:
-                raise ValueError(f"{path}: not an H5Cam file (no attrs.THW)")
+            if thw is None or "is_metric" not in h.attrs:
+                raise ValueError(f"{path}: not an H5Cam file "
+                                 "(no attrs.THW / is_metric)")
             m = h.get("meta")
             out = {"file_type": "h5cam",
                    "THW": tuple(int(x) for x in thw),
-                   "is_metric": bool(h.attrs.get("is_metric")),
+                   "is_metric": bool(h.attrs["is_metric"]),
                    "sections": sorted(n for n in ("img", *SECTIONS) if n in h),
                    "dataset": None, "scene": None, "seq": None, "split": None,
                    "src_frame_ids": None}
@@ -213,8 +212,6 @@ class H5Cam(H5Base):
         v = self.meta("src_frame_ids")
         if v is None:
             return None
-        if isinstance(v, (bytes, str)):
-            return [v.decode() if isinstance(v, bytes) else v]
         return [x.decode() if isinstance(x, bytes) else str(x) for x in v]
 
     @property
@@ -228,16 +225,16 @@ class H5Cam(H5Base):
 
     # ---- src_frame_idxs semantics: dense (== arange(T)) is not stored ----
     def _meta_value(self, name, value):
+        if name == "src_frame_ids":                 # set / replace / remove:
+            self._fid_index = None                  # the index_of cache is stale
         if name == "src_frame_idxs" and (value == np.arange(self.T)).all():
             return None                             # dense: drop it
         return value
 
     # ---- src_frame_ids (E1): string frame ids + O(1) lookup ----
-    def set_src_frame_ids(self, ids):
-        """List[str] of the frames' source ids — STRING ids ONLY (the unit is
-        in the name; an int-like array is rejected, use src_frame_idxs),
-        length T, UNIQUE (a duplicate is a ValueError). Row order = time
-        order. Can coexist with src_frame_idxs."""
+    def _src_frame_ids_check(self, ids):
+        """The src_frame_ids guards: strings only, length T, UNIQUE (O(T)).
+        Shared by set_src_frame_ids and set_meta (the _meta_check hook)."""
         ids = list(ids)
         for i, x in enumerate(ids):
             if not isinstance(x, str):
@@ -246,9 +243,30 @@ class H5Cam(H5Base):
         if len(ids) != self.T:
             raise ValueError(f"src_frame_ids must be length T = {self.T}, "
                              f"got {len(ids)}")
-        dup = sorted({x for x in ids if ids.count(x) > 1})
+        seen, dup = set(), set()
+        for x in ids:                          # O(T) dup scan
+            (dup if x in seen else seen).add(x)
         if dup:
-            raise ValueError(f"src_frame_ids must be unique; duplicates: {dup}")
+            d = sorted(dup)
+            raise ValueError(f"src_frame_ids must be unique; {len(d)} duplicated, "
+                             f"e.g. {d[:5]}")
+        return ids
+
+    def _meta_check(self, name, value):
+        """H5Cam-specific meta validation (runs in set_meta, both forms):
+        src_frame_ids gets the uniqueness check (the index_of cache is
+        dropped in _meta_value, which also runs on a remove)."""
+        if name == "src_frame_ids":
+            self._src_frame_ids_check(value)
+        return value
+
+
+    def set_src_frame_ids(self, ids):
+        """List[str] of the frames' source ids — STRING ids ONLY (the unit is
+        in the name; an int-like array is rejected, use src_frame_idxs),
+        length T, UNIQUE (a duplicate is a ValueError — checked in set_meta
+        too, so both entry points agree). Row order = time order. Can
+        coexist with src_frame_idxs."""
         return self.set_meta("src_frame_ids", ids)
 
     def index_of(self, fid):
@@ -276,24 +294,16 @@ class H5Cam(H5Base):
         self._store_img(normalize_img_array(rgb))
 
     def set_rgb_bytes(self, frames):
-        """a sequence of image BYTES: flat (T,) (or (T,N) with N=1 for the
-        /img layout). Per-frame policy in codecs.rgb (q<=95 verbatim, else
-        re-encoded q95). Arrays: set_rgb; file paths: set_rgb_paths."""
-        h, w, flat = normalize_img_bytes(frames)
-        if len(flat) % self.T:                          # (T,N): N must be 1
-            raise ValueError(f"rgb bytes must give T={self.T} frames "
-                             f"(T*N), got {len(flat)}")
-        self._store_img((h, w, flat[:self.T]))
+        """a flat (T,) sequence of image BYTES. Per-frame policy in codecs.rgb
+        (q<=95 verbatim, else re-encoded q95). Arrays: set_rgb; file paths:
+        set_rgb_paths."""
+        self._store_img(normalize_img_bytes(frames))
 
     def set_rgb_paths(self, paths):
         """FILE PATHS (a str/Path or a flat (T,) sequence) read from disk,
         same per-frame policy as set_rgb_bytes. Arrays: set_rgb; bytes:
         set_rgb_bytes."""
-        h, w, flat = normalize_img_paths(paths)
-        if len(flat) % self.T:
-            raise ValueError(f"rgb paths must give T={self.T} frames "
-                             f"(T*N), got {len(flat)}")
-        self._store_img((h, w, flat[:self.T]))
+        self._store_img(normalize_img_paths(paths))
 
     def _store_img(self, hww):
         """(H, W, frames) -> /img/{0..T-1} (the frame count + size are
@@ -466,6 +476,9 @@ class H5Cam(H5Base):
         if name not in SECTIONS and name != "img":
             raise ValueError(f"unknown section {name!r}; known: ("
                              f"'img', {', '.join(repr(n) for n in SECTIONS)})")
+        if self._allocated is not None and name in self._allocated:
+            raise ValueError(f"{name!r} is allocated for write_frame: finalize() "
+                             f"first")
         h = self._h
         if name == "img":
             rg = h.get("img")
@@ -509,15 +522,21 @@ class H5Cam(H5Base):
     def allocate(self, sections=("depth", "K", "T"), depth_hw=None):
         """Pre-create the named sections ('img' or a SECTIONS name) for
         per-frame writing: write_frame(t, ...) then finalize(). A section
-        already stored (a set_* ran) must be del_section()'d first; the
-        img group is only marked (its per-frame datasets are created on
-        write_frame). depth_hw: (h, w) for depth / depth_conf (default:
-        the scene (H, W))."""
+        already stored (a set_* ran) must be del_section()'d first; existing
+        /img frames must be del_section('img')'d first (an empty img group is
+        fine). depth_hw: (h, w) for depth / depth_conf (default: the scene
+        (H, W)). Every section is validated BEFORE any dataset is created or
+        the state is set (a mid-way failure leaves the file re-allocatable)."""
         if self._allocated is not None:
             raise ValueError("already allocated (write_frame / finalize)")
         names = list(sections)
+        hw = None                                     # validated once, shared
         for name in names:
             if name == "img":
+                rg = self._h.get("img")
+                if rg is not None and any(f"{t}" in rg for t in range(self.T)):
+                    raise ValueError("img frames are already stored: "
+                                     "del_section('img') before allocate")
                 continue
             if name not in SECTIONS:
                 raise ValueError(f"unknown section {name!r}; known: "
@@ -525,23 +544,36 @@ class H5Cam(H5Base):
             if name in self._h:
                 raise ValueError(f"{name} is already stored: del_section "
                                  f"before allocate")
-        self._allocated = set(names)
+            if SECTIONS[name].frame2d and hw is None:
+                hw = (self.H, self.W) if depth_hw is None else depth_hw
+                try:
+                    hw = tuple(operator.index(x) for x in hw)
+                except TypeError:
+                    raise TypeError(f"depth_hw must be 2 integers, got {depth_hw!r}") from None
+                if len(hw) != 2 or not depth_hw_ok(*hw, self.H, self.W):
+                    raise ValueError(f"depth_hw {hw} incompatible with scene "
+                                     f"({self.H},{self.W}): aspect ratio must match")
+        self._allocated = set(names)                  # all validated — set the state
         self._written = {n: set() for n in names}
         for name in names:
             if name == "img":
                 continue
             s = SECTIONS[name]
-            if s.frame2d:
-                hw = depth_hw if depth_hw is not None else (self.H, self.W)
-                if not depth_hw_ok(*hw, self.H, self.W):
-                    raise ValueError(f"depth_hw {hw} incompatible with scene "
-                                     f"({self.H},{self.W}): aspect ratio must match")
-                h_, w_ = hw
-            else:
-                h_, w_ = FRAME_SHAPE[name]
+            h_, w_ = hw if s.frame2d else FRAME_SHAPE[name]
             self._h.create_dataset(name, shape=(self.T, h_, w_), dtype=s.dtype,
                                    fillvalue=s.fillvalue,
                                    chunks=(1, h_, w_), **filter_args(name))
+
+    def _frame1(self, name, a):
+        """(h, w) or (1, h, w) -> (1, h, w). Anything else (a (2, h, w) batch)
+        is a clear error — a frame is ONE frame (frame 1 must not be dropped
+        silently)."""
+        a = np.asarray(a)
+        if a.ndim == 2:
+            return a[None]
+        if a.ndim == 3 and a.shape[0] == 1:
+            return a
+        raise ValueError(f"{name} frame must be (h, w) or (1, h, w), got {a.shape}")
 
     def write_frame(self, t, rgb=None, depth_mm=None, depth_meters=None,
                     depth_conf=None, mask=None, K=None, pose_c2w=None):
@@ -549,91 +581,90 @@ class H5Cam(H5Base):
         the frame's rgb (an (H,W,3) uint8 array or its jpg bytes) and / or
         depth_mm | depth_meters (one of the two — the unit is in the name),
         depth_conf (0-1 float), mask, K ((3,3) pinhole-checked), pose_c2w
-        ((4,4) c2w-checked) — same rules as the set_* methods, one frame at
-        a time (peak memory is O(one frame)). A section not allocated raises."""
+        ((4,4) c2w-checked) — same rules as the set_* methods (the unit
+        guards included: an integer is never depth_meters / depth_conf, a
+        float is never depth_mm), one frame at a time (peak memory is O(one
+        frame)). A section not allocated raises. EVERY input is validated
+        before the first write (a failed call leaves the frame untouched, and
+        a later call may still write a different section of the same t)."""
         if self._allocated is None:
             raise ValueError("allocate(sections=...) before write_frame")
         self._t(t)
-        if any(t in s for s in self._written.values()):
-            raise ValueError(f"frame {t} already written (it cannot be "
-                             f"written twice)")
-        wrote = False
+        if depth_mm is not None and depth_meters is not None:
+            raise ValueError("write_frame takes one of depth_mm / depth_meters "
+                             "(the unit is in the name) — not both")
+        conv = {}                                    # validate + convert first
         if rgb is not None:
             self._require_allocated("img")
             h, w, flat = (normalize_img_bytes([bytes(rgb)])
                           if isinstance(rgb, (bytes, bytearray, memoryview))
                           else normalize_img_array(rgb))
+            if len(flat) != 1:                       # a (2,H,W,3) batch
+                raise ValueError(f"rgb frame must be ONE (H,W,3) frame, got "
+                                 f"{len(flat)} frames")
             if (h, w) != (self.H, self.W):
                 raise ValueError(f"rgb size ({h},{w}) != scene ({self.H},{self.W})")
-            self._h.require_group("img").create_dataset(
-                f"{t}", data=np.frombuffer(flat[0], np.uint8))
-            self._written["img"].add(t)
-            wrote = True
-        if depth_mm is not None and depth_meters is not None:
-            raise ValueError("write_frame takes one of depth_mm / depth_meters "
-                             "(the unit is in the name) — not both")
+            conv["img"] = flat[0]                    # the stored jpg bytes
         if depth_mm is not None:
             self._require_allocated("depth")
-            a = np.asarray(depth_mm, dtype=np.uint16)
-            d = to_mm(a[None] if a.ndim == 2 else a)
-            self._write_frame_data("depth", t, d)
-            wrote = True
+            conv["depth"] = to_mm(self._frame1("depth_mm", depth_mm))
         elif depth_meters is not None:
             self._require_allocated("depth")
-            a = np.asarray(depth_meters, dtype=np.float64)
-            d = to_meters_mm(a[None] if a.ndim == 2 else a)
-            self._write_frame_data("depth", t, d)
-            wrote = True
+            conv["depth"] = to_meters_mm(self._frame1("depth_meters", depth_meters))
         if depth_conf is not None:
             self._require_allocated("depth_conf")
-            a = np.asarray(depth_conf, dtype=np.float64)
-            c = to_conf(a[None] if a.ndim == 2 else a)
-            self._write_frame_data("depth_conf", t, c)
-            wrote = True
+            conv["depth_conf"] = to_conf(self._frame1("depth_conf", depth_conf))
         if mask is not None:
             self._require_allocated("mask")
-            a = np.asarray(mask)
-            if a.ndim == 2:
-                if a.shape != (self.H, self.W):
-                    raise ValueError(f"mask frame must be (H, W) = "
-                                     f"({self.H},{self.W}), got {a.shape}")
-                m = to_mask(a[None], 1, self.H, self.W)
-            elif a.ndim == 3 and a.shape[0] == 1:
-                m = to_mask(a, 1, self.H, self.W)
-            else:
-                raise ValueError(f"mask frame must be (H, W) or (1, H, W), "
-                                 f"got {a.shape}")
-            self._write_frame_data("mask", t, m)
-            wrote = True
+            a = self._frame1("mask", mask)
+            if a.shape[1:] != (self.H, self.W):
+                raise ValueError(f"mask frame must be (H, W) = "
+                                 f"({self.H},{self.W}), got {a.shape[1:]}")
+            conv["mask"] = to_mask(a, 1, self.H, self.W)
         if K is not None:
             self._require_allocated("K")
-            self._h["K"][t] = check_K(np.asarray(K, dtype=np.float32))
-            self._written["K"].add(t)
-            wrote = True
+            conv["K"] = check_K(self._mat1("K", K, (3, 3)))
         if pose_c2w is not None:
             self._require_allocated("T")
-            self._h["T"][t] = check_pose(np.asarray(pose_c2w, dtype=np.float32))
-            self._written["T"].add(t)
-            wrote = True
-        if not wrote:
+            conv["T"] = check_pose(self._mat1("pose_c2w", pose_c2w, (4, 4)))
+        if not conv:
             raise ValueError("write_frame got nothing to write (pass at least "
                              "one of rgb / depth_mm / depth_meters / depth_conf / "
                              "mask / K / pose_c2w)")
+        for name, d in conv.items():                 # state + shape checks too
+            if t in self._written[name]:
+                raise ValueError(f"frame {t} {name} already written (it "
+                                 f"cannot be written twice)")
+            if name in ("depth", "depth_conf", "mask"):
+                hw = self._h[name].shape[1:]
+                if d.shape[1:] != hw:
+                    raise ValueError(f"{name} frame shape {d.shape[1:]} != "
+                                     f"allocated {hw}")
+        # everything validated — now (and only now) write the frame
+        for name, d in conv.items():
+            if name == "img":
+                self._h.require_group("img").create_dataset(
+                    f"{t}", data=np.frombuffer(d, np.uint8))
+            elif name in ("K", "T"):
+                self._h[name][t] = d
+            else:
+                self._h[name][t] = d[0]
+            self._written[name].add(t)
+        return self
+
+    @staticmethod
+    def _mat1(name, m, shape):
+        """ONE (3,3) / (4,4) matrix as float32 (a batch or a wrong shape is
+        a clear error, not an h5py broadcast error mid-write)."""
+        a = np.asarray(m, dtype=np.float32)
+        if a.shape != shape:
+            raise ValueError(f"{name} frame must be {shape}, got {a.shape}")
+        return a
 
     def _require_allocated(self, name):
         if name not in self._allocated:
             raise ValueError(f"section {name!r} is not allocated "
                              f"(allocate(sections=...))")
-
-    def _write_frame_data(self, name, t, d1):
-        """one (1, h, w) converted frame row into an allocated dataset"""
-        d = self._h[name]
-        h_, w_ = d.shape[1:]
-        if d1.shape[1:] != (h_, w_):
-            raise ValueError(f"{name} frame shape {d1.shape[1:]} != allocated "
-                             f"({h_},{w_})")
-        d[t] = d1[0]
-        self._written[name].add(t)
 
     def finalize(self):
         """Check that every t was written into every allocated section (a

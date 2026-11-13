@@ -43,6 +43,18 @@ Four review passes plus an independent audit. Everything is fixed, dropped on pu
 - **Docs, text and tests:** stale per-frame-VDS and fingerprint wording removed, plus small leftovers (#72, #73, #78, #81). Regression tests were added for each fix.
 - ⏭️ #77: `_tobedelete/` is the gitignored local mv-not-rm holding area, not repo content.
 
+## Closed: review passes 7–8 #82–#113 (2026-11-13)
+
+All fixed. Each fix has a regression test in `tests/test_issue_bugs.py`; the per-issue text is in git history.
+
+- **Legacy removed (#82–#85, #113):** `attrs.file_type` is required by every `open` and by `peek`/`verify`. rgb accepts flat `(T,)` input only (the `(T,N)` adapter is gone). `peek` requires `is_metric`.
+- **Streaming writer (#86–#90, #101, #105–#107, #110, #111):** `write_frame` uses the same unit guards as `set_*`. It validates everything (shape, state, K/pose `(3,3)`/`(4,4)`, a single rgb frame) before the first write, and tracks writes per section. `allocate` validates first, rejects existing img frames and needs an integer `depth_hw`. `del_section` is refused while a section is allocated.
+- **K / pose (#91, #94, #100):** `check_K`/`check_pose` reject NaN/inf and return the input (stored float32). `K_row_errors`/`pose_row_errors` are the one rule set, also used by `verify`.
+- **src_frame_ids (#92, #93, #97, #108, #109):** one shared guard for both `set_meta` forms (strings, length T, unique, O(T), bounded error). The `index_of` cache is dropped on set/replace/remove.
+- **verify (#95, #98, #112):** one `file_type` dispatch (`verify_any`, used by files and dirs). Depth is read one frame at a time.
+- **H5Geo (#96, #99):** `/` in attr names rejected; uint triangle indices accepted.
+- **Docs (#102–#104):** unused imports removed; stale registry and `peek` wording fixed.
+
 ## Open
 
 None.

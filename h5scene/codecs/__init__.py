@@ -8,7 +8,9 @@
                entry point, never guessed from the dtype), the 0/65535 sentinel
                rules, the (h,w) aspect-ratio + resize rules, depth_conf,
                the derived depth_mask.
-- pose.py    — K (3,3) / T (4,4) broadcast.
+- pose.py    — K (3,3) / T (4,4) broadcast + the convention checks
+               (check_K / check_pose raise the first error; K_row_errors /
+               pose_row_errors list them all).
 - sections.py— the declarative SECTIONS table (dtype / compression / shuffle /
                fillvalue / frame2d) + has() + is_metric; it drives
                the H5Cam writers, the rig's VDS build, and the tests.
@@ -18,7 +20,8 @@ from .rgb import (JPG_QUALITY, decode_rgb, encode_rgb, jpeg_dqt_tables,
                   normalize_img_paths)
 from .depth import (MM_MAX, conf_frame, depth_hw_ok, depth_mask, meters_frame,
                     mm_frame, to_conf, to_mask, to_mm, to_meters_mm)
-from .pose import broadcast_matrix, check_K, check_pose
+from .pose import (K_row_errors, broadcast_matrix, check_K, check_pose,
+                   pose_row_errors)
 from .sections import (CUSTOM_DTYPES, FRAME_SHAPE, GEO_ATTRS, GeoSpec,
                       SECTIONS, Spec, filter_args, geo_chunks, has, is_metric)
 
@@ -27,7 +30,7 @@ __all__ = [
     "jpeg_hw", "normalize_img_array", "normalize_img_bytes", "normalize_img_paths",
     "MM_MAX", "conf_frame", "depth_hw_ok", "depth_mask", "meters_frame", "mm_frame",
     "to_conf", "to_mask", "to_mm", "to_meters_mm",
-    "broadcast_matrix", "check_K", "check_pose",
+    "broadcast_matrix", "check_K", "check_pose", "K_row_errors", "pose_row_errors",
     "FRAME_SHAPE", "SECTIONS", "Spec", "filter_args", "has", "is_metric",
     "CUSTOM_DTYPES", "GEO_ATTRS", "GeoSpec", "geo_chunks",
 ]

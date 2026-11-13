@@ -17,48 +17,21 @@ import sys
 import h5py
 import numpy as np
 
-from .codecs import SECTIONS, check_K, check_pose
+from .codecs import K_row_errors, pose_row_errors
 from .codecs.rgb import decode_rgb
 from .h5cam import H5Cam
 from .h5camrig import H5CamRig
 from .h5geo import H5Geo
 
-# the K/pose check tolerances (the same rules as set_K / set_pose_c2w)
-_EPS = 1e-6
+# the invalid-sentinel value (0 and 65535 are both "invalid")
 _U16_MAX = int(np.iinfo(np.uint16).max)
-
-
-def _check_K_rows(krows):
-    errs = []
-    for i, m in enumerate(krows):
-        fx, fy = m[0, 0], m[1, 1]
-        if not (fx > 0 and fy > 0):
-            errs.append(f"K frame {i}: fx / fy must be > 0, got {fx} / {fy}")
-        if abs(m[2, 2] - 1.0) > _EPS:
-            errs.append(f"K frame {i}: K[2,2] must be 1 (pinhole), got {m[2, 2]}")
-        for r, c, name in ((1, 0, "skew K[1,0]"), (2, 1, "K[2,1]"), (2, 0, "K[2,0]")):
-            if abs(m[r, c]) > _EPS:
-                errs.append(f"K frame {i}: {name} must be 0, got {m[r, c]}")
-    return errs
-
-
-def _check_pose_rows(prows):
-    errs = []
-    for i, p in enumerate(prows):
-        if not np.allclose(p[3], [0, 0, 0, 1], atol=_EPS):
-            errs.append(f"pose frame {i}: last row must be [0, 0, 0, 1], got {p[3]}")
-        R = p[:3, :3]
-        if not np.allclose(R @ R.T, np.eye(3), atol=1e-3):
-            errs.append(f"pose frame {i}: R must be orthonormal")
-        if abs(np.linalg.det(R) - 1.0) > 1e-3:
-            errs.append(f"pose frame {i}: det(R) must be 1, got {np.linalg.det(R)}")
-    return errs
 
 
 def verify_file(path):
     """One H5Cam file -> {"path", "ok", "checks" {name: {...}}}. A file that
     is not an H5Cam (or does not exist) is a hard failure. NOT a light read:
-    the depth/img checks load the full data (H5Cam.peek is the light one)."""
+    it reads every depth frame (one at a time) and every img frame
+    (H5Cam.peek is the light one)."""
     out = {"path": str(path), "ok": False, "checks": {}}
     if not osp.exists(path):
         out["checks"]["open"] = {"ok": False, "error": "file missing"}
@@ -72,19 +45,29 @@ def verify_file(path):
     T, H, W = cam.shape
     with cam:
         if cam.has("depth"):
-            d = cam._h["depth"][:]
-            valid = (d != 0) & (d != _U16_MAX)
-            n65535 = int((d == _U16_MAX).sum())
+            # one frame at a time (a long sequence must not need T * h * w in RAM)
+            d = cam._h["depth"]
+            n65535 = nv = 0
+            vmin, vmax = None, None
+            for t in range(T):
+                f = d[t]
+                v = (f != 0) & (f != _U16_MAX)
+                n65535 += int((f == _U16_MAX).sum())
+                if v.any():
+                    nv += int(v.sum())
+                    lo, hi = int(f[v].min()), int(f[v].max())
+                    vmin = lo if vmin is None else min(vmin, lo)
+                    vmax = hi if vmax is None else max(vmax, hi)
+            n = T * d.shape[1] * d.shape[2]
             out["checks"]["depth"] = {
                 "ok": n65535 == 0, "n_65535": n65535,
-                "valid_min": int(d[valid].min()) if valid.any() else None,
-                "valid_max": int(d[valid].max()) if valid.any() else None,
-                "valid_frac": round(float(valid.mean()), 6)}
+                "valid_min": vmin, "valid_max": vmax,
+                "valid_frac": round(nv / n, 6)}
         if cam.has("K"):
-            errs = _check_K_rows(cam._h["K"][:])
+            errs = K_row_errors(cam._h["K"][:].astype(np.float64))
             out["checks"]["K"] = {"ok": not errs, "errors": errs}
         if cam.has("T"):
-            errs = _check_pose_rows(cam._h["T"][:])
+            errs = pose_row_errors(cam._h["T"][:].astype(np.float64))
             out["checks"]["pose"] = {"ok": not errs, "errors": errs}
         if cam.has("img"):
             bad = []
@@ -126,17 +109,26 @@ def verify_dir(d):
     results = []
     for f in sorted(os.listdir(d)):
         p = osp.join(d, f)
-        if not f.endswith(".h5") or not osp.isfile(p):
-            continue
-        try:
-            with h5py.File(p, "r") as h:
-                ft = str(h.attrs.get("file_type", ""))
-        except Exception as e:
-            results.append({"path": p, "ok": False, "checks": {
-                "open": {"ok": False, "error": f"{type(e).__name__}: {e}"}}})
-            continue
-        results.append(verify_file(p) if ft == "h5cam" else _verify_other(p, ft))
+        if f.endswith(".h5") and osp.isfile(p):
+            results.append(verify_any(p))
     return results
+
+
+def verify_any(path):
+    """One EXISTING h5scene file, dispatched on attrs.file_type (a single
+    file argument must verify as its own class, not as an H5Cam)."""
+    try:
+        with h5py.File(str(path), "r") as h:
+            ft = str(h.attrs.get("file_type", ""))
+    except Exception as e:
+        return {"path": str(path), "ok": False, "checks": {"open": {
+            "ok": False, "error": f"{type(e).__name__}: {e}"}}}
+    if ft == "h5cam":
+        return verify_file(path)
+    if ft in ("h5camrig", "h5geo"):
+        return _verify_other(path, ft)
+    return {"path": str(path), "ok": False, "checks": {"open": {
+        "ok": False, "error": f"not an h5scene file (attrs.file_type = {ft!r})"}}}
 
 
 def main(argv=None):
@@ -151,7 +143,7 @@ def main(argv=None):
         if osp.isdir(p):
             results.extend(verify_dir(p))
         elif osp.exists(p):
-            results.append(verify_file(p))
+            results.append(verify_any(p))
         else:
             results.append({"path": p, "ok": False, "checks": {
                 "open": {"ok": False, "error": "file missing"}}})

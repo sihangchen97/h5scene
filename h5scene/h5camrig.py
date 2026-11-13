@@ -98,7 +98,7 @@ class H5CamRig(H5Base):
         try:
             a = self._h
             ft = a.attrs.get("file_type")
-            if ft is not None and str(ft) != "h5camrig":
+            if ft is None or str(ft) != "h5camrig":
                 raise ValueError(f"{self.path}: not an H5CamRig file "
                                  f"(attrs.file_type = {ft!r})")
             if any(k not in a.attrs for k in

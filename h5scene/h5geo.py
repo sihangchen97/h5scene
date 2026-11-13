@@ -12,7 +12,8 @@ Houdini element levels (a VERTEX is a face corner, never a position):
                         topology, N/uv/Cd …
       /prims/<attr>     rows F:  vertexcount (F,) i32 only when prim_size 0,
                         N/Cd/class/material/id …
-      /meta/…           H5Cam keys minus seq / src_frame_idxs
+      /meta/…           H5Cam keys minus seq / src_frame_idxs / src_frame_ids /
+                        timestamps (a static scene has no per-frame ids)
       /detail/…         name tables + textures (Phase 2 / deferred)
 
 V and F are derived (never stored): V = len(ptnum), F = V // prim_size for
@@ -25,6 +26,7 @@ run at write and read time (D5), not at open.
 Phase 1 (this file): P / Cd / N on points + triangle topology. Phase 2 reaches
 the other levels and the /detail tables through the same generic accessors.
 """
+import h5py
 import numpy as np
 
 from .codecs import CUSTOM_DTYPES, GEO_ATTRS, geo_chunks, is_metric as _is_metric
@@ -60,7 +62,7 @@ class H5Geo(H5Base):
         super().__init__(path, mode=mode)
         try:
             ft = self._h.attrs.get("file_type")
-            if ft is not None and str(ft) != "h5geo":
+            if ft is None or str(ft) != "h5geo":
                 raise ValueError(f"{self.path}: not an H5Geo file "
                                  f"(attrs.file_type = {ft!r})")
             m = self.attr("n_points")
@@ -144,6 +146,10 @@ class H5Geo(H5Base):
             for name in grp:
                 spec = GEO_ATTRS.get(f"{lvl}/{name}")
                 d = grp[name]
+                if not isinstance(d, h5py.Dataset):
+                    raise ValueError(f"{lvl}/{name} is not a dataset (a nested "
+                                     "group corrupts the file — attribute names "
+                                     "must not contain '/')")
                 if spec is not None:
                     if d.dtype != spec.dtype:
                         raise ValueError(f"{lvl}/{name} dtype {d.dtype.name} "
@@ -222,7 +228,8 @@ class H5Geo(H5Base):
                 out.append(f" {lvl}={a}")
         return " ".join(out) + ">"
 
-    # ---- /meta (H5Cam keys minus seq / src_frame_idxs) ----------------------
+    # ---- /meta (H5Cam keys minus seq / src_frame_idxs / src_frame_ids /
+    #      timestamps — a static scene has no per-frame ids) ------------------
     @property
     def dataset(self):
         return self.meta("dataset")
@@ -245,8 +252,8 @@ class H5Geo(H5Base):
 
     # ---- topology (written as one unit; value-checked at write AND read) ----
     def set_triangles(self, tri):
-        """(F,3) int triangle indices, 0 <= i < M -> attrs.prim_size = 3 and
-        /vertices/ptnum = tri.ravel() (V = 3F). Indices are range-checked
+        """(F,3) int/uint triangle indices, 0 <= i < M -> attrs.prim_size = 3
+        and /vertices/ptnum = tri.ravel() (V = 3F). Indices are range-checked
         BEFORE anything is deleted; an existing topology of a different size
         (or with vertex/prim attributes) must be del_topology()'d first."""
         a = np.asarray(tri)
@@ -255,8 +262,9 @@ class H5Geo(H5Base):
         if a.shape[0] < 1:
             raise ValueError("set_triangles needs F >= 1 (an empty mesh is a "
                              "point cloud — just don't write a topology)")
-        if a.dtype.kind != "i":
-            raise TypeError(f"set_triangles needs int indices, got {a.dtype.name}")
+        if a.dtype.kind not in "iu":
+            raise TypeError(f"set_triangles needs int/uint indices, "
+                             f"got {a.dtype.name}")
         if a.min() < 0 or a.max() >= self.M:
             raise ValueError(f"triangle index out of range 0..{self.M - 1} "
                              f"(min {a.min()}, max {a.max()})")
@@ -434,6 +442,9 @@ class H5Geo(H5Base):
         return np.ascontiguousarray(out)
 
     def _set(self, lvl, name, a):
+        if "/" in name:
+            raise ValueError(f"attribute name {name!r} must not contain '/' "
+                             f"(it would create a nested group)")
         key = f"{lvl}/{name}"
         spec = GEO_ATTRS.get(key)
         if lvl != "points" and not self.has_topology:

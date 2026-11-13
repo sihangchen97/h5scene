@@ -97,7 +97,8 @@ H5Cam usage:
     cam.set_meta("scene", "x")                          # single-key form (None = remove)
     d = H5Cam.peek(path)                  # the listing fields WITHOUT the full
                                           # open validation (file_type / THW /
-                                          # sections / the /meta keys)
+                                          # is_metric / sections / dataset /
+                                          # scene / seq / split / src_frame_ids)
     # CLI: python -m h5scene.verify <file | dir> [--json out.json]   # the
     # post-conversion check (opens OK, no raw 65535, K/pose conventions,
     # every img frame decodes at the declared (H, W), src_frame_ids unique);

@@ -363,3 +363,367 @@ def test_camera_meta_edit_does_not_break_rig_open(tmp_path):
     with H5CamRig.open(out) as rig:             # must still open
         assert rig.shape == (3, 2, 32, 64)
         assert int(rig.depth_mm(2, 0)[0, 0]) == 1200
+
+
+# ---- review pass 7: legacy / adapters removed (#82-#84) ----
+def test_82_open_requires_file_type(tmp_path):
+    """A file without attrs.file_type is not an h5scene file (no legacy pass)."""
+    import h5py
+    from h5scene import H5Geo
+    p = tmp_path / "c.h5"
+    H5Cam.create(p, 1, 4, 4).close()
+    with h5py.File(p, "r+") as h:
+        del h.attrs["file_type"]
+    with pytest.raises(ValueError, match="file_type"):
+        H5Cam.open(p)
+    g = tmp_path / "g.h5"
+    H5Geo.create(g, np.zeros((3, 3), np.float32)).close()
+    with h5py.File(g, "r+") as h:
+        del h.attrs["file_type"]
+    with pytest.raises(ValueError, match="file_type"):
+        H5Geo.open(g)
+
+
+def test_83_rgb_bytes_no_TN_adapter(tmp_path):
+    """(T, N) image bytes / paths are rejected (the old rig layout)."""
+    b = encode_rgb(np.zeros((8, 8, 3), np.uint8))
+    a = np.empty((2, 2), object)
+    a[:] = [[b, b], [b, b]]
+    with H5Cam.create(tmp_path / "c.h5", 2, 8, 8) as cam:
+        with pytest.raises(ValueError, match=r"flat \(T,\)"):
+            cam.set_rgb_bytes(a)
+        with pytest.raises(ValueError, match="frames but T"):
+            cam.set_rgb_bytes([b] * 4)                # 2T frames: no silent [:T]
+        with pytest.raises(ValueError):
+            cam.set_rgb(np.zeros((2, 1, 8, 8, 3), np.uint8))   # (T,N,H,W,3)
+
+
+def test_84_verify_dir_rejects_untagged(tmp_path):
+    import h5py
+    from h5scene.verify import verify_dir
+    with h5py.File(tmp_path / "x.h5", "w") as h:
+        h.create_dataset("a", data=[1])
+    (r,) = verify_dir(str(tmp_path))
+    assert not r["ok"] and "not an h5scene file" in r["checks"]["open"]["error"]
+
+
+def _K33():
+    return np.array([[4., 0., 3.], [0., 4., 3.], [0., 0., 1.]], np.float32)
+
+
+def test_86_87_write_frame_rejects_wrong_units(tmp_path):
+    """write_frame's depth unit guards match the set_* methods: a float is
+    never depth_mm (it wraps/truncates), an int is never depth_meters
+    (1500 'm' -> 0) or depth_conf, and a negative mm stores the invalid
+    sentinel 0 (exactly like set_depth_mm), not a valid 65436."""
+    with H5Cam.create(str(tmp_path / "c.h5"), 2, 4, 8) as cam:
+        cam.allocate(sections=("depth",))
+        with pytest.raises(TypeError, match="meters"):
+            cam.write_frame(0, depth_mm=np.full((4, 8), 1.5, np.float32))
+        with pytest.raises(TypeError, match="integer MM"):
+            cam.write_frame(0, depth_meters=np.full((4, 8), 1500, np.int32))
+        # a negative mm stores the sentinel 0, not a valid 65436
+        cam.write_frame(0, depth_mm=np.full((4, 8), -100, np.int32))
+        assert (cam.depth_mm(0) == 0).all()
+        cam.write_frame(1, depth_mm=np.full((4, 8), 200, np.uint16))
+        cam.finalize()
+    with H5Cam.create(str(tmp_path / "d.h5"), 1, 4, 8) as cam:
+        cam.allocate(sections=("depth", "depth_conf"))
+        with pytest.raises(TypeError, match="integers are not accepted"):
+            cam.write_frame(0, depth_conf=np.full((4, 8), 1, np.int32))
+        # nothing was poisoned: the frame is still writable
+        cam.write_frame(0, depth_mm=np.full((4, 8), 100, np.uint16),
+                        depth_conf=np.full((4, 8), 1.0, np.float32))
+        cam.finalize()
+
+
+def test_101_write_frame_frame_is_one_frame(tmp_path):
+    """A (2, h, w) 'frame' is rejected — frame 1 used to be dropped silently."""
+    with H5Cam.create(str(tmp_path / "c.h5"), 2, 4, 8) as cam:
+        cam.allocate(sections=("depth", "depth_conf"))
+        with pytest.raises(ValueError, match=r"\(h, w\) or \(1, h, w\)"):
+            cam.write_frame(0, depth_mm=np.full((2, 4, 8), 100, np.uint16))
+        with pytest.raises(ValueError, match=r"\(h, w\) or \(1, h, w\)"):
+            cam.write_frame(0, depth_conf=np.ones((2, 4, 8), np.float32))
+        # one frame per call is fine (both (1, h, w) and (h, w))
+        cam.write_frame(0, depth_mm=np.full((1, 4, 8), 100, np.uint16),
+                        depth_conf=np.ones((4, 8), np.float32))
+        cam.write_frame(1, depth_mm=np.full((4, 8), 100, np.uint16),
+                        depth_conf=np.ones((1, 4, 8), np.float32))
+        cam.finalize()
+
+
+def test_88_write_frame_per_section_written_and_no_poison(tmp_path):
+    """written is tracked PER SECTION (depth for t in one call, K in another
+    is fine), and a call that fails part-way leaves t clean (a retry works)."""
+    with H5Cam.create(str(tmp_path / "c.h5"), 2, 4, 8) as cam:
+        cam.allocate(sections=("depth", "K"))
+        cam.write_frame(0, depth_mm=np.full((4, 8), 100, np.uint16))
+        cam.write_frame(0, K=_K33())                     # a different section, same t
+        with pytest.raises(ValueError, match="already written"):
+            cam.write_frame(0, depth_mm=np.full((4, 8), 1, np.uint16))
+        # a bad K in the same call must not poison the depth half
+        badK = _K33(); badK[0, 0] = -4.
+        with pytest.raises(ValueError, match="fx / fy"):
+            cam.write_frame(1, depth_mm=np.full((4, 8), 1, np.uint16), K=badK)
+        assert 1 not in cam._written["depth"]            # depth for t=1 not written
+        cam.write_frame(1, depth_mm=np.full((4, 8), 1, np.uint16))
+        cam.write_frame(1, K=_K33())
+        cam.finalize()
+
+
+def test_89_90_allocate_validates_all_first(tmp_path):
+    """allocate validates EVERY section before it creates any dataset or sets
+    the state (a mid-way failure leaves the file re-allocatable), and it
+    rejects existing /img frames with a clear error."""
+    with H5Cam.create(str(tmp_path / "c.h5"), 2, 4, 8) as cam:
+        with pytest.raises(ValueError, match="aspect ratio"):
+            cam.allocate(sections=("depth", "K"), depth_hw=(4, 2))  # bad hw
+        cam.allocate(sections=("depth",))          # still allocatable
+        cam.close()
+    with H5Cam.create(str(tmp_path / "i.h5"), 2, 4, 8) as cam:
+        cam.set_rgb(np.zeros((2, 4, 8, 3), np.uint8))
+        with pytest.raises(ValueError, match=r"del_section\('img'\)"):
+            cam.allocate(sections=("img",))
+
+
+def test_91_check_K_pose_keep_input_dtype(tmp_path):
+    """set_K / set_pose_c2w store float32 (the SECTIONS dtype) — check_K /
+    check_pose used to return a float64 copy, doubling the space and making
+    cam.K() dtype depend on the writer."""
+    from h5scene.codecs import check_K, check_pose
+    k = _K33()
+    assert check_K(k).dtype == np.float32            # the input, not a copy
+    p = np.eye(4, dtype=np.float32)
+    assert check_pose(p).dtype == np.float32
+    with H5Cam.create(str(tmp_path / "c.h5"), 2, 4, 8) as cam:
+        cam.set_K(k)
+        cam.set_pose_c2w(p)
+    with h5py.File(str(tmp_path / "c.h5")) as h:
+        assert h["K"].dtype == np.float32 and h["T"].dtype == np.float32
+
+
+def test_92_93_set_meta_src_frame_ids_checked_and_cache_cleared(tmp_path):
+    """The uniqueness check runs through set_meta too (both forms), and every
+    write of src_frame_ids invalidates the index_of cache (a stale cache
+    used to KeyError the new ids)."""
+    with H5Cam.create(str(tmp_path / "c.h5"), 3, 4, 8) as cam:
+        with pytest.raises(ValueError, match="unique"):
+            cam.set_meta("src_frame_ids", ["a", "a", "b"])
+        with pytest.raises(ValueError, match="unique"):
+            cam.set_meta(src_frame_ids=["a", "a", "b"])
+        cam.set_src_frame_ids(["a", "b", "c"])
+        assert cam.index_of("b") == 1                # populate the cache
+        cam.set_src_frame_ids(["x", "y", "z"])
+        assert cam.index_of("z") == 2                # the cache was cleared
+        with pytest.raises(KeyError):
+            cam.index_of("b")
+
+
+def test_94_check_K_pose_reject_nan_inf(tmp_path):
+    """NaN/inf in cx / cy / the translation used to slip past the tolerance
+    checks (abs(nan - 1) > eps is False) — they are rejected now."""
+    from h5scene.codecs import check_K, check_pose
+    k = _K33(); k[0, 2] = np.nan
+    with pytest.raises(ValueError, match="finite"):
+        check_K(k)
+    k = _K33(); k[0, 0] = np.inf
+    with pytest.raises(ValueError, match="finite"):
+        check_K(k)
+    p = np.eye(4); p[0, 3] = np.nan
+    with pytest.raises(ValueError, match="finite"):
+        check_pose(p)
+    with H5Cam.create(str(tmp_path / "c.h5"), 1, 4, 8) as cam:
+        with pytest.raises(ValueError, match="finite"):
+            cam.set_K(k)
+        p = np.eye(4); p[2, 3] = np.inf
+        with pytest.raises(ValueError, match="finite"):
+            cam.set_pose_c2w(p)
+
+
+def test_95_verify_single_file_dispatches_on_file_type(tmp_path, capsys):
+    """A single file argument verifies as ITS class (a rig/geo file used to
+    be pushed through H5Cam-only verify_file and reported FAIL)."""
+    from h5scene import H5Geo
+    from h5scene.verify import main as verify_main, verify_any
+    f = str(tmp_path / "g.geo.h5")
+    H5Geo.create(f, np.zeros((4, 3), np.float32)).close()
+    assert verify_any(f)["ok"] is True
+    assert verify_main([f]) == 0 and "OK" in capsys.readouterr().out
+
+
+def test_96_h5geo_rejects_slash_names_and_groups(tmp_path):
+    """A '/' in a custom attribute name made a nested group that crashed the
+    next open (AttributeError on a Group) — the write is rejected now, and
+    open rejects non-dataset members with a clear error."""
+    import h5py
+    from h5scene import H5Geo
+    f = str(tmp_path / "g.geo.h5")
+    g = H5Geo.create(f, np.zeros((4, 3), np.float32))
+    with pytest.raises(ValueError, match="must not contain"):
+        g.set_point_attr("a/b", np.zeros(4, np.float32))
+    g.close()
+    with h5py.File(f, "r+") as h:                    # simulate the corrupt file
+        h["points"].create_group("a/b")
+    with pytest.raises(ValueError, match="not a dataset"):
+        H5Geo.open(f)
+
+
+# ---- review pass 7: performance / API (#99, #100) ----
+def test_99_set_triangles_accepts_unsigned(tmp_path):
+    """uint32 faces (Open3D / PLY readers) round-trip as the stored int32."""
+    from h5scene import H5Geo
+    g = H5Geo.create(tmp_path / "g.h5", np.zeros((12, 3), np.float32))
+    g.set_triangles(np.arange(12, dtype=np.uint32).reshape(4, 3))
+    tri = g.triangles()
+    g.close()
+    assert tri.dtype == np.int32
+    assert tri.ravel().tolist() == list(range(12))
+    # a float index is still rejected (an index is an integer kind only)
+    g = H5Geo.create(tmp_path / "f.h5", np.zeros((12, 3), np.float32))
+    with pytest.raises(TypeError, match="int/uint"):
+        g.set_triangles(np.zeros((4, 3), np.float32))
+    g.close()
+
+
+def test_100_verify_uses_the_codec_row_checks(tmp_path):
+    """verify_file's K/pose checks are codecs.pose's row error lists (no
+    duplicate rule set). The writers reject the bad rows, so the file is
+    corrupted through raw h5py: a NaN K (accepted by the old verify copy,
+    whose abs(nan-1) > eps is False) and a non-orthonormal pose row must
+    both fail."""
+    from h5scene.codecs import K_row_errors, pose_row_errors
+    from h5scene.verify import verify_file
+    p = str(tmp_path / "c.h5")
+    with H5Cam.create(p, 1, 8, 8) as cam:
+        cam.set_K(np.array([[8., 0., 4.], [0., 8., 4.], [0., 0., 1.]],
+                           np.float32))
+        cam.set_pose_c2w(np.eye(4, dtype=np.float32))
+    with h5py.File(p, "r+") as h:
+        h["K"][0, 0, 0] = np.nan                        # the NaN row
+        h["T"][0] = np.array([[1, 0, 0, 0], [0, 1, 0, 0],
+                              [0, 0.5, 0, 0], [0, 0, 0, 1]], np.float32)
+    r = verify_file(p)
+    assert not r["checks"]["K"]["ok"]
+    assert any("K frame 0" in e and "finite" in e
+               for e in r["checks"]["K"]["errors"])
+    assert not r["checks"]["pose"]["ok"]
+    assert any("pose frame 0" in e for e in r["checks"]["pose"]["errors"])
+    # the row lists are the shared implementation (an empty list = OK):
+    K = np.array([[8., 0., 4.], [0., 8., 4.], [0., 0., 1.]], np.float64)
+    assert K_row_errors(K[None]) == []
+    assert pose_row_errors(np.eye(4, dtype=np.float64)[None]) == []
+
+
+def test_98_verify_depth_reads_frame_by_frame(tmp_path):
+    """verify_file's depth check aggregates per frame (not d[:] over the
+    whole sequence): the report is identical to before for a multi-frame
+    depth (valid min/max, the 65535 count, the valid fraction)."""
+    from h5scene.verify import verify_file
+    T, H, W = 6, 8, 8
+    p = str(tmp_path / "c.h5")
+    with H5Cam.create(p, T, H, W) as cam:
+        cam.set_depth_mm(np.arange(T * H * W, dtype=np.uint16).reshape(T, H, W) % 7)
+    r = verify_file(p)
+    d = (np.arange(T * H * W, dtype=np.uint16) % 7).reshape(T, H, W)
+    v = (d != 0)
+    assert r["checks"]["depth"]["ok"] and r["checks"]["depth"]["n_65535"] == 0
+    assert r["checks"]["depth"]["valid_min"] == int(d[v].min())
+    assert r["checks"]["depth"]["valid_max"] == int(d[v].max())
+    assert r["checks"]["depth"]["valid_frac"] == round(float(v.mean()), 6)
+    # a raw 65535 in ONE frame is counted (the sentinel check survives the
+    # per-frame loop)
+    with h5py.File(p, "r+") as h:
+        h["depth"][3, 2, 2] = 65535
+    r = verify_file(p)
+    assert r["checks"]["depth"]["n_65535"] == 1 and not r["ok"]
+
+
+# ---- review pass 8 (#105–#113) ----
+
+def test_105_write_frame_checks_shape_and_state_before_any_write(tmp_path):
+    """A depth shape mismatch or an already-written section must fail BEFORE
+    rgb is written (the frame stays untouched and retryable)."""
+    rgb = np.zeros((8, 8, 3), np.uint8)
+    with H5Cam.create(str(tmp_path / "a.h5"), 2, 8, 8) as cam:
+        cam.allocate(("img", "depth"), depth_hw=(4, 4))
+        with pytest.raises(ValueError, match="allocated"):
+            cam.write_frame(0, rgb=rgb, depth_mm=np.ones((8, 8), np.uint16))
+        assert "0" not in cam.h["img"] and cam._written["img"] == set()
+        cam.write_frame(0, rgb=rgb, depth_mm=np.ones((4, 4), np.uint16))
+        cam.write_frame(1, depth_mm=np.ones((4, 4), np.uint16))
+        with pytest.raises(ValueError, match="already written"):
+            cam.write_frame(1, rgb=rgb, depth_mm=np.ones((4, 4), np.uint16))
+        assert 1 not in cam._written["img"]
+
+
+def test_106_write_frame_K_pose_shape(tmp_path):
+    with H5Cam.create(str(tmp_path / "a.h5"), 2, 8, 8) as cam:
+        cam.allocate(("img", "K", "T"))
+        for kw in ({"K": np.eye(4)}, {"K": np.stack([np.eye(3)] * 2)},
+                   {"K": np.ones(3)}, {"pose_c2w": np.eye(3)}):
+            with pytest.raises(ValueError, match="frame must be"):
+                cam.write_frame(0, rgb=np.zeros((8, 8, 3), np.uint8), **kw)
+        assert cam._written["img"] == set()
+
+
+def test_107_write_frame_rgb_batch_rejected(tmp_path):
+    with H5Cam.create(str(tmp_path / "a.h5"), 2, 8, 8) as cam:
+        cam.allocate(("img",))
+        with pytest.raises(ValueError, match="ONE"):
+            cam.write_frame(0, rgb=np.zeros((2, 8, 8, 3), np.uint8))
+        cam.write_frame(0, rgb=np.zeros((1, 8, 8, 3), np.uint8))
+
+
+def test_108_index_of_cache_dropped_on_remove(tmp_path):
+    with H5Cam.create(str(tmp_path / "a.h5"), 2, 8, 8) as cam:
+        cam.set_src_frame_ids(["a", "b"])
+        assert cam.index_of("a") == 0
+        cam.set_meta("src_frame_ids", None)
+        with pytest.raises(ValueError, match="no src_frame_ids"):
+            cam.index_of("a")
+        cam.set_meta(src_frame_ids=["x", "y"])       # multi-key form too
+        assert cam.index_of("y") == 1
+
+
+def test_109_duplicate_ids_message_is_bounded(tmp_path):
+    with H5Cam.create(str(tmp_path / "a.h5"), 1000, 1, 1) as cam:
+        with pytest.raises(ValueError) as e:
+            cam.set_src_frame_ids([str(i // 2) for i in range(1000)])
+        assert "500 duplicated" in str(e.value) and len(str(e.value)) < 200
+
+
+def test_110_allocate_depth_hw_must_be_integers(tmp_path):
+    with H5Cam.create(str(tmp_path / "a.h5"), 2, 8, 8) as cam:
+        with pytest.raises(TypeError, match="depth_hw"):
+            cam.allocate(("depth",), depth_hw=(4.0, 4.0))
+        with pytest.raises(ValueError, match="depth_hw"):
+            cam.allocate(("depth",), depth_hw=(4, 4, 1))
+        cam.allocate(("depth",), depth_hw=(np.int64(4), 4))   # still allocatable
+
+
+def test_111_del_section_refused_while_allocated(tmp_path):
+    with H5Cam.create(str(tmp_path / "a.h5"), 2, 8, 8) as cam:
+        cam.allocate(("depth",))
+        with pytest.raises(ValueError, match="finalize"):
+            cam.del_section("depth")
+
+
+def test_112_verify_dir_uses_verify_any(tmp_path):
+    from h5scene.verify import verify_dir
+    (tmp_path / "junk.h5").write_bytes(b"junk")
+    with h5py.File(tmp_path / "tagless.h5", "w"):
+        pass
+    r = {Path(x["path"]).name: x for x in verify_dir(str(tmp_path))}
+    assert not r["junk.h5"]["ok"] and not r["tagless.h5"]["ok"]
+    assert "not an h5scene file" in r["tagless.h5"]["checks"]["open"]["error"]
+
+
+def test_113_peek_requires_is_metric(tmp_path):
+    p = str(tmp_path / "a.h5")
+    H5Cam.create(p, 2, 8, 8).close()
+    assert H5Cam.peek(p)["is_metric"] is False
+    with h5py.File(p, "r+") as h:
+        del h.attrs["is_metric"]
+    with pytest.raises(ValueError, match="is_metric"):
+        H5Cam.peek(p)
